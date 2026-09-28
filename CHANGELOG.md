@@ -17,13 +17,11 @@ this project adheres to the stability contract in
   that count while jobs wait in Redis. `n8n_worker_pools` pools are not
   paused. Supported from chart `1.13.0`: the key shipped in `1.12.0`, but
   that release still sets the worker's `spec.replicas` on every Helm
-  upgrade and would override a held count. Three plan-time warnings cover
+  upgrade and would override a held count. Two plan-time warnings cover
   the inert cases: a count without `pause`
-  (`check.worker_keda_paused_replica_count_requires_pause`), a chart older
-  than `1.13.0` (`check.worker_keda_pause_requires_a_supported_chart`), and
-  `n8n_worker_keda_min_replicas = 0`, where the chart renders no worker
-  `ScaledObject` (`check.worker_keda_pause_requires_a_worker_floor`). Same
-  input names and semantics as terraform-azurerm-n8n and
+  (`check.worker_keda_paused_replica_count_requires_pause`) and a chart
+  older than `1.13.0` (`check.worker_keda_pause_requires_a_supported_chart`).
+  Same input names and semantics as terraform-azurerm-n8n and
   terraform-google-n8n. The chart's matching `keda.webhookProcessor.pause` is
   not exposed: this module scales webhook processors with its own HPA
   (`scaling.tf`), so no webhook `ScaledObject` exists for the annotation to
@@ -132,6 +130,45 @@ this project adheres to the stability contract in
   and the value plus `n8n_prestop_sleep` must stay below
   `n8n_termination_grace_period`, which the old `extra_env` route never
   checked. See #147.
+
+- `n8n_worker_keda_min_replicas = 0` no longer renders no worker Deployment
+  and no worker `ScaledObject`. `queueMode.workerReplicaCount` is now
+  floored at `max(1, n8n_worker_keda_min_replicas)`, decoupled from
+  `keda.worker.minReplicaCount`, which still gets the caller's real floor
+  including `0`. Previously a floor of `0` removed the default workers
+  entirely, since the chart gates both templates on `workerReplicaCount >
+  0`, leaving jobs on the default queue with no consumer and no autoscaler
+  to bring one up (#146). **Behavior change for callers already at a floor
+  of `0`:** the next apply creates a worker Deployment and a worker
+  `ScaledObject` where there were none. On chart `1.13.0` or newer the new
+  Deployment has no `spec.replicas`, so Kubernetes starts it at 1 replica.
+  That worker processes any backlog that built up on the default `jobs`
+  queue while it had no consumer, and KEDA then scales it to zero once the
+  queue stays empty for its cooldown period. On a chart older than `1.13.0`,
+  the chart still renders `spec.replicas: 1`, so every apply that updates
+  the Helm release can reset a Deployment KEDA scaled to zero back to 1
+  replica until KEDA reconciles it again. A floor of `0` can no longer be used to run without
+  default workers, for example beside `n8n_worker_pools`: the default
+  Deployment now always exists, and KEDA starts it whenever jobs arrive on
+  the default queue. Check that queue before you apply if old jobs in it
+  should not run. `tests/scripts/smoke-test.sh` now accepts workers scaled
+  to zero when the worker `ScaledObject` has a floor of `0` and is Ready. It
+  fails when the scaler is not Ready, warns when it is paused, skips the
+  in-pod Redis probe in that state, skips the test execution when the scaler
+  is paused or not Ready at zero, waits up to 180s for a worker that is
+  starting from zero during the pod health check (then warns only when every
+  worker pod is waiting for a node, and fails otherwise), and polls the test
+  execution 90 times instead of 30, 2s apart (about 180s instead of 60s), so
+  KEDA can start a worker. A Deployment whose replica counts cannot be read
+  now fails instead of reading as `0`. A missing
+  `n8n-worker` Deployment now fails too, instead of silently switching the
+  script to its single-instance checks: this module always runs queue mode
+  and always renders that Deployment, so its absence means a broken
+  deployment. The single-instance checks run only with `DEPLOY_MODE=single`.
+  The unhealthy-pod listing in the pod health check now selects pods by
+  their `app.kubernetes.io/component` label (`main`, `worker`,
+  `webhook-processor`); it used the Deployment name before and never
+  matched any pod.
 
 ## [0.5.0] - 2026-09-21
 

@@ -206,3 +206,34 @@ default_timeout=$(console <<< 'local.n8n_chart_default_graceful_shutdown_timeout
 jq -e --arg want "$default_timeout" '.data.N8N_GRACEFUL_SHUTDOWN_TIMEOUT == $want' "$tmp/configmap-default.json" >/dev/null
 jq -e '.data.N8N_GRACEFUL_SHUTDOWN_TIMEOUT == "45"' "$tmp/configmap-overridden.json" >/dev/null
 echo "PASS: chart $chart_version, n8n_graceful_shutdown_timeout reaches N8N_GRACEFUL_SHUTDOWN_TIMEOUT in the ConfigMap"
+
+# n8n_worker_keda_min_replicas = 0 (issue #146): n8n.tf feeds
+# queueMode.workerReplicaCount from local.n8n_worker_replica_count (floored at
+# 1 in scaling.tf) and keda.worker.minReplicaCount from the raw input. Both
+# worker templates gate on workerReplicaCount > 0, so a floor of 0 must still
+# render the worker Deployment and its ScaledObject, with KEDA's own floor at
+# 0. Both values are read from the module, so changing the local's floor
+# fails here. This does not catch n8n.tf bypassing the local:
+# helm_release.values is unknown under plan mocks, so that wiring still needs
+# a real plan to verify.
+console -var='n8n_worker_keda_min_replicas=0' \
+  <<< 'jsonencode({queueMode={workerReplicaCount=local.n8n_worker_replica_count},keda={worker={minReplicaCount=var.n8n_worker_keda_min_replicas}}})' \
+  > "$tmp/worker-floor-zero-values.json"
+jq -e '.queueMode.workerReplicaCount == 1 and .keda.worker.minReplicaCount == 0' "$tmp/worker-floor-zero-values.json" >/dev/null \
+  || { echo "worker floor of 0: expected workerReplicaCount=1 and minReplicaCount=0, got $(cat "$tmp/worker-floor-zero-values.json")" >&2; exit 1; }
+for template in deployment-worker scaledobject-worker; do
+  helm template n8n "$tmp/n8n" -f "$tmp/values.json" -f "$tmp/worker-floor-zero-values.json" \
+    --set secretRefs.existingSecret=test-core \
+    --set license.enabled=true --set license.existingSecret.name=test-license \
+    --set queueMode.enabled=true --set webhookProcessor.enabled=true \
+    --set keda.enabled=true --set taskRunners.enabled=true \
+    --set 'keda.worker.triggers[0].type=redis' \
+    --set 'keda.worker.triggers[0].metadata.address=redis:6379' \
+    --set 'keda.worker.triggers[0].metadata.listName=bull:jobs:wait' \
+    --set 'keda.worker.triggers[0].metadata.listLength=1' \
+    --show-only "templates/$template.yaml" > "$tmp/worker-floor-zero-$template.yaml"
+  console <<< "jsonencode(yamldecode(file(\"$tmp/worker-floor-zero-$template.yaml\")))" > "$tmp/worker-floor-zero-$template.json"
+done
+jq -e '.kind == "Deployment"' "$tmp/worker-floor-zero-deployment-worker.json" >/dev/null
+jq -e '.kind == "ScaledObject" and .spec.minReplicaCount == 0' "$tmp/worker-floor-zero-scaledobject-worker.json" >/dev/null
+echo "PASS: chart $chart_version, worker floor of 0 still renders Deployment+ScaledObject with KEDA minReplicaCount=0"
