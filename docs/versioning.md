@@ -185,7 +185,26 @@ custom chart; this release carries no worker-pools change either way.
   add a curated-finding suppression for a version this repo's own security
   gate cannot yet vouch for, while `1.35` remains inside AWS's 14-month
   standard-support window. Revisit once a `checkov` release adds `1.36` to
-  that list.
+  that list; tracked in
+  [#158](https://github.com/n8n-io/terraform-aws-n8n/issues/158).
+  `tests/scripts/check-version-drift.sh` reads that allow-list at the pinned
+  `CHECKOV_VERSION` and checks it for the next minor above the pin. While
+  that minor is missing, the report lists `eks/kubernetes_version` under
+  "Known and expected (not actionable)" with its `isEol` flag and a link to
+  #158 instead of as drift. It applies the hold only when every input is
+  definite, and otherwise keeps the line in the drift list:
+  - `isEol: true` (endoflife.date's flag for the end of EKS standard
+    support) adds an `ACTIONABLE` note on its own, because a pin outside
+    standard support outweighs the checkov gate.
+  - The pinned checkov allowing the next minor adds an `ACTIONABLE` note.
+  - A newer checkov release allowing it adds an `ACTIONABLE` note to bump
+    `CHECKOV_VERSION`, so the fix is visible before anyone makes it.
+  - An unreadable or unparseable EKS release list, `isEol` flag, or pinned
+    allow-list adds a `note:` line instead, so a network or format failure
+    never hides real drift. The allow-list must be one complete single-line
+    list literal; any other shape counts as unparseable. Only the optional
+    latest-checkov lookup may fail quietly, since the pinned answer alone
+    decides the hold.
 
 ## Provider locks and toolchain updates
 
@@ -223,7 +242,9 @@ match that tag exactly, confirmed at `1.11.0` as of this PR, so the tag is a
 reliable proxy for the published chart version rather than a literal registry
 query), and `kubernetes_version` against EKS's supported-version list via
 `endoflife.date`'s public JSON API (an aggregator over AWS's own
-release-calendar docs; AWS itself does not publish this behind an API). It
+release-calendar docs; AWS itself does not publish this behind an API),
+cross-checked against checkov's `CKV_AWS_339` allow-list (see the
+`kubernetes_version` entry above). It
 always exits 0: it is a report, not a gate, and everything it would flag is
 release-sized work per the tiers above, not an auto-bump.
 
