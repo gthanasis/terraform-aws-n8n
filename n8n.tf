@@ -48,7 +48,7 @@ locals {
 
 # ── Task runner auth token ─────────────────────────────────────────────────────
 # Generated once and stored in state. Used as the shared secret between the n8n
-# task broker (port 5679) and runner sidecars (workers only with chart 1.13.0).
+# task broker (port 5679) and runner sidecars (workers only with chart 1.14.0).
 # Only active when n8n_task_runners_enabled = true.
 
 resource "random_password" "task_runner_token" {
@@ -91,6 +91,95 @@ resource "kubernetes_namespace" "n8n" {
 
 locals {
   namespace_name = var.create_namespace ? kubernetes_namespace.n8n[0].metadata[0].name : var.namespace
+}
+
+locals {
+  # Only mode from chart 1.14.0 on: that release dropped storage.availableModes
+  # and its N8N_AVAILABLE_BINARY_DATA_MODES (n8n-io/n8n-hosting#185), which
+  # n8n 2.x ignores and warns about on every start. A chart pinned below
+  # 1.14.0 still renders the env var from its own default, "filesystem", and
+  # n8n 1.x still reads it, so those charts keep getting "filesystem,s3" or S3
+  # would drop out of the available modes. Prerelease builds of an older
+  # version count as older. A local so tests/scripts/check-main-chart.sh
+  # renders the chart with exactly what helm_release.n8n sends.
+  # local.n8n_chart_version_parts is defined with the webhook gate below.
+  n8n_chart_drops_available_modes = (
+    tonumber(local.n8n_chart_version_parts[0]) > 1 || (
+      tonumber(local.n8n_chart_version_parts[0]) == 1 &&
+      tonumber(local.n8n_chart_version_parts[1]) >= 14
+    )
+  )
+  n8n_s3_storage_values = merge(
+    { mode = "s3" },
+    local.n8n_chart_drops_available_modes ? {} : { availableModes = "filesystem,s3" },
+  )
+}
+
+locals {
+  # Whether the running n8n may predate N8N_WEBHOOK_URL (added in 2.30.0) and
+  # so still needs the legacy WEBHOOK_URL. Below 2.30.0, n8n builds webhook
+  # URLs from WEBHOOK_URL or else from N8N_PROTOCOL://N8N_HOST:N8N_PORT, which
+  # here is http://<n8n_domain>:5678/. Leaving WEBHOOK_URL out of an old image
+  # therefore breaks webhook URLs silently, while sending it to a current one
+  # only costs a deprecation warning. So the module drops it only when the
+  # tags prove the image is current, and sends it whenever they cannot.
+  #
+  # The version, when one can be read:
+  #   - n8n_image_tag starts with a version ("2.27.4", "2.27.4-mypackages"):
+  #     that version decides.
+  #   - Otherwise, for a custom image (n8n_image_repository set) with a
+  #     non-null tag and task runners enabled, n8n_task_runner_image_tag,
+  #     since that is where docs tell callers to put the underlying n8n
+  #     version. It is never read for a null n8n_image_tag (it only tags the
+  #     sidecar and says nothing about the chart's default app image), nor
+  #     with task runners disabled, where the input is documented as ignored.
+  #
+  # With no readable version, the image counts as current only when
+  # n8n_image_tag is null on the default chart repository at chart 1.12.0 or
+  # newer, whose appVersion is a concrete 2.39.6 or newer. A floating tag
+  # proves nothing: the chart pulls with IfNotPresent, so `stable`, `latest`,
+  # or the `stable` default of charts 1.4.0 to 1.11.x can run an older image
+  # a node cached earlier. Charts 1.0.0 to 1.3.x pin 2.9.0 to 2.12.2, and a
+  # custom n8n_chart_repository's appVersion cannot be verified. An
+  # n8n_image_repository override with a null tag still counts as current:
+  # the chart then tags it with that same concrete appVersion.
+  # Everything else gets WEBHOOK_URL.
+  n8n_version_regex = "^v?([0-9]+)\\.([0-9]+)\\."
+  n8n_image_version_core = var.n8n_image_tag == null ? null : try(
+    regex(local.n8n_version_regex, var.n8n_image_tag),
+    var.n8n_image_repository != null && var.n8n_task_runners_enabled && var.n8n_task_runner_image_tag != null
+    ? try(regex(local.n8n_version_regex, var.n8n_task_runner_image_tag), null)
+    : null
+  )
+  # Major and minor only; the n8n_chart_version validation guarantees both are
+  # numeric, and split("+") drops build metadata as in scaling.tf.
+  n8n_chart_version_parts = split(".", split("+", var.n8n_chart_version)[0])
+  n8n_image_known_current = (
+    var.n8n_image_tag == null &&
+    var.n8n_chart_repository == "oci://ghcr.io/n8n-io/n8n-helm-chart" && (
+      tonumber(local.n8n_chart_version_parts[0]) > 1 || (
+        tonumber(local.n8n_chart_version_parts[0]) == 1 &&
+        tonumber(local.n8n_chart_version_parts[1]) >= 12
+      )
+    )
+  )
+  n8n_needs_legacy_webhook_url_env = local.n8n_image_version_core != null ? (
+    tonumber(local.n8n_image_version_core[0]) < 2 ? true : (
+      tonumber(local.n8n_image_version_core[0]) == 2 && tonumber(local.n8n_image_version_core[1]) < 30
+    )
+  ) : !local.n8n_image_known_current
+
+  # The webhook env entries config.extraEnv carries. A local rather than inline
+  # in helm_release.n8n so tests can assert the rendered list: the release's
+  # values are unknown at plan under mocks (see AGENTS.md).
+  n8n_webhook_base_url = coalesce(var.n8n_webhook_url, "https://${local.n8n_domain}")
+  n8n_webhook_url_env = concat(
+    [{ name = "N8N_WEBHOOK_URL", value = local.n8n_webhook_base_url }],
+    # WEBHOOK_URL is the pre-2.30.0 name. n8n reads N8N_WEBHOOK_URL from
+    # 2.30.0 on and logs a deprecation warning at startup whenever WEBHOOK_URL
+    # is set, so it is only emitted when the image is not known to be current.
+    local.n8n_needs_legacy_webhook_url_env ? [{ name = "WEBHOOK_URL", value = local.n8n_webhook_base_url }] : [],
+  )
 }
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
@@ -136,7 +225,9 @@ resource "kubernetes_secret" "n8n" {
       N8N_HOST           = local.n8n_domain
       N8N_PORT           = "5678"
       N8N_PROTOCOL       = "http"
-      WEBHOOK_URL        = coalesce(var.n8n_webhook_url, "https://${local.n8n_domain}")
+      # No WEBHOOK_URL here: coreSecretsEnv reads only the four keys above
+      # (plus the license key), so a copy in this Secret was never read.
+      # The pods get it from config.extraEnv instead.
     },
     # Dropped rather than merged in as null when the caller's own Secret
     # carries the license key instead: license.existingSecret then points
@@ -482,11 +573,8 @@ resource "helm_release" "n8n" {
         name   = local.s3_bucket_name
         region = local.aws_region
       }
-      auth = { autoDetect = true }
-      storage = {
-        mode           = "s3"
-        availableModes = "filesystem,s3"
-      }
+      auth    = { autoDetect = true }
+      storage = local.n8n_s3_storage_values
     }
 
     # S3 credentials are injected by EKS Pod Identity (s3.tf).
@@ -644,11 +732,11 @@ resource "helm_release" "n8n" {
           # the actual logs are silently dropped. See variable description.
           { name = "N8N_LOG_OUTPUT", value = var.n8n_log_output },
           { name = "N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS", value = "true" },
-          # Override the internally computed http://host:5678 URL so webhooks show the correct HTTPS address.
-          { name = "WEBHOOK_URL", value = coalesce(var.n8n_webhook_url, "https://${local.n8n_domain}") },
-          # Keep the current n8n webhook URL setting in sync with the legacy
-          # WEBHOOK_URL fallback while older n8n versions still consume it.
-          { name = "N8N_WEBHOOK_URL", value = coalesce(var.n8n_webhook_url, "https://${local.n8n_domain}") },
+        ],
+        # N8N_WEBHOOK_URL, plus the legacy WEBHOOK_URL when the image may
+        # predate 2.30.0 (see local.n8n_needs_legacy_webhook_url_env).
+        local.n8n_webhook_url_env,
+        [
           # The editor's own base URL, and what n8n builds absolute non-webhook
           # URLs from: UrlService.getInstanceBaseUrl() prefers
           # N8N_EDITOR_BASE_URL and falls back to WEBHOOK_URL when it is unset.
@@ -943,7 +1031,7 @@ resource "helm_release" "n8n" {
     }
 
     # ── Task runners ─────────────────────────────────────────────────────────
-    # When enabled, upstream chart 1.13.0 adds a runner sidecar to worker pods
+    # When enabled, upstream chart 1.14.0 adds a runner sidecar to worker pods
     # only in queue mode, isolating JavaScript and Python from the n8n process.
     # The worker's n8n container runs a task broker on port 5679; its sidecar
     # connects over localhost using the auto-generated auth token.
@@ -1015,7 +1103,7 @@ resource "helm_release" "n8n" {
     extraVolumeMounts = local.n8n_extra_volume_mounts
     },
     # Override the app image only where the caller asks for it; otherwise the
-    # selected chart defaults apply untouched (1.13.0 uses appVersion). Repository
+    # selected chart defaults apply untouched (1.14.0 uses appVersion). Repository
     # and tag are merged key by key rather than as a whole `image` map so setting
     # one does not blank the other: yamlencode would emit `repository: null`,
     # which the chart renders into an unpullable `null:2.27.4` reference.
@@ -1564,7 +1652,7 @@ check "graceful_shutdown_fits_grace_period" {
 check "custom_image_repository_needs_an_explicit_tag" {
   assert {
     condition     = var.n8n_image_repository != null ? var.n8n_image_tag != null : true
-    error_message = "n8n_image_repository is set but n8n_image_tag is null, so the chart appends its own default tag (appVersion 2.40.5 in upstream chart 1.13.0). If this tag is absent from the custom repository, the pods fail with ImagePullBackOff. Set n8n_image_tag to a tag that exists in this repository. Ignore this warning only if the repository publishes the selected chart's default tag."
+    error_message = "n8n_image_repository is set but n8n_image_tag is null, so the chart appends its own default tag (appVersion 2.41.4 in upstream chart 1.14.0). If this tag is absent from the custom repository, the pods fail with ImagePullBackOff. Set n8n_image_tag to a tag that exists in this repository. Ignore this warning only if the repository publishes the selected chart's default tag."
   }
 }
 
@@ -1575,7 +1663,7 @@ check "custom_image_tag_needs_a_task_runner_tag" {
         var.n8n_image_tag == null || var.n8n_task_runner_image_tag != null
       ) : true
     ) : true
-    error_message = "A custom n8n image (n8n_image_repository + n8n_image_tag) is set with task runners enabled, but n8n_task_runner_image_tag is null. The chart tags the runner sidecar from the app image, so the sidecar resolves to n8nio/runners:<n8n_image_tag> and every pod carrying a runner sidecar (workers only in upstream chart 1.13.0 queue mode) fails with ImagePullBackOff unless that exact tag exists upstream, which fails the apply rather than completing with broken pods. Set n8n_task_runner_image_tag to the n8n version the custom image is built from. Ignore this warning if the custom image's tag is itself a published n8n version."
+    error_message = "A custom n8n image (n8n_image_repository + n8n_image_tag) is set with task runners enabled, but n8n_task_runner_image_tag is null. The chart tags the runner sidecar from the app image, so the sidecar resolves to n8nio/runners:<n8n_image_tag> and every pod carrying a runner sidecar (workers only in upstream chart 1.14.0 queue mode) fails with ImagePullBackOff unless that exact tag exists upstream, which fails the apply rather than completing with broken pods. Set n8n_task_runner_image_tag to the n8n version the custom image is built from. Ignore this warning if the custom image's tag is itself a published n8n version."
   }
 }
 
