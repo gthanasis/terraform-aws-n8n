@@ -2204,6 +2204,21 @@ variable "redis_snapshot_retention_limit" {
   }
 }
 
+variable "redis_maxmemory_policy" {
+  description = "Eviction policy for the module-managed ElastiCache Redis, written to a module-managed aws_elasticache_parameter_group's maxmemory-policy parameter and attached to whichever topology redis_high_availability_enabled, redis_transit_encryption_enabled, or redis_kms_encryption_enabled selects. Defaults to \"noeviction\": AWS documents the maxmemory-policy default for node-based clusters as volatile-lru (https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html), which evicts keys carrying a TTL once Redis runs out of memory, and some of n8n's Bull queue keys (job locks) carry a TTL, so queue state could be silently removed under memory pressure. With noeviction, a full Redis instead rejects every write that needs memory with an OOM error: enqueues, Bull lock renewals (n8n does not retry a stalled job), and n8n's cache, which shares this Redis in queue mode. Size Redis for the queue and the cache together and alert on memory use; see README -> \"Redis eviction policy\". maxmemory-policy is a dynamic parameter: AWS applies a change to it immediately on every node already using the parameter group, independent of redis_apply_immediately. Changing this input therefore takes effect on the next apply, not at the next maintenance window, regardless of how redis_apply_immediately is set. The first attach of the parameter group on upgrade was also observed to take effect immediately with redis_apply_immediately = false on the single-node aws_elasticache_cluster (live test, in-sync within about 40 seconds, no reboot); the replication-group topology has not been verified live, so check the cache's parameter group status after applying there. Pin this to volatile-lru to keep pre-existing eviction behavior unchanged. Avoid the allkeys-* policies: they can also evict Bull job data, which has no TTL, so they are worse for the queue than the old default. Rolling back to a module version without this input needs a manual step first; see the README."
+  type        = string
+  default     = "noeviction"
+  nullable    = false
+
+  validation {
+    condition = contains([
+      "noeviction", "allkeys-lru", "allkeys-lfu", "allkeys-random",
+      "volatile-lru", "volatile-lfu", "volatile-random", "volatile-ttl",
+    ], var.redis_maxmemory_policy)
+    error_message = "redis_maxmemory_policy must be one of the ElastiCache Redis/Valkey maxmemory policies: noeviction, allkeys-lru, allkeys-lfu, allkeys-random, volatile-lru, volatile-lfu, volatile-random, volatile-ttl."
+  }
+}
+
 variable "n8n_redis_timeout_threshold" {
   description = "Milliseconds n8n will keep trying to reach Redis before it gives up and exits the process, wired to QUEUE_BULL_REDIS_TIMEOUT_THRESHOLD. Leave null (the default) to use the chart's 10000, which is n8n's own default and what every existing deployment already runs. Raise it when redis_high_availability_enabled = true and you would rather n8n rode a failover out than restarted: with the default, an ElastiCache promotion outlasts the budget and every main, worker and webhook pod exits and is restarted by Kubernetes. Pick the value deliberately, because the budget is coarser than it looks. n8n does not set ioredis's connectTimeout, so it stays at 10s, and a connect to a demoted primary hangs for that full 10s before failing. Each failed attempt therefore spends about 11.1s of this budget, making the effective values 11.1s, 33.2s and 66.4s for settings of 10s, 30s and 60s. 30000 was measured failing by 1.1 seconds against a 25 second outage; 60000 survived every case measured. 60000 is also confirmed against a real ElastiCache failover, where no container terminated and the endpoint stayed stale for 48 seconds, leaving about 20 seconds of headroom. That is one observed failover, so treat it as a good default rather than a guarantee. See README → \"Surviving a Redis failover without restarting\" for the measurements."
   type        = number

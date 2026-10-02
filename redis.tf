@@ -89,6 +89,72 @@ resource "aws_security_group" "redis" {
   tags = merge(local.common_tags, { Name = "n8n-redis-sg-${local.cluster_name}" })
 }
 
+# ── Parameter group (maxmemory-policy) ────────────────────────────────────────
+# Both ElastiCache topologies below otherwise run on the family default
+# parameter group (`default.redis7`), and AWS documents the maxmemory-policy
+# default for node-based clusters as `volatile-lru`: once Redis is full it
+# evicts keys that carry a TTL, chosen by least-recently-used estimation.
+# https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html
+# Some of n8n's Bull queue keys (job locks) carry a TTL, so volatile-lru can
+# silently remove queue state under memory pressure instead of failing loudly. A
+# dedicated parameter group lets this module override that one parameter
+# without copying every other family default by hand, and defaults
+# var.redis_maxmemory_policy to "noeviction": a full Redis instead rejects the
+# write with an OOM error instead. That is visible, not harmless: n8n's cache
+# shares this Redis in queue mode, and Bull lock renewals fail too. See
+# var.redis_maxmemory_policy's description in variables.tf and README ->
+# "Redis eviction policy".
+#
+# Family is the hardcoded "redis7" literal, matching both resources'
+# hardcoded engine_version = "7.1" below: there is no engine/version input to
+# derive it from, and bumping the hardcoded version in step with this family
+# is already how both resources stay in sync with each other.
+#
+# Changing the family later (for example to valkey8) needs more than editing
+# the literal. `family` and `name` both force replacement, and the name is
+# fixed (aws_elasticache_parameter_group has no name_prefix in the AWS
+# provider 6.x schema). By default Terraform would destroy the group first,
+# while a cache still uses it, and AWS refuses to delete a parameter group
+# that is in use. Putting the family in `name` and adding
+# `lifecycle { create_before_destroy = true }` lets Terraform create the new
+# group and re-point the cache before it deletes the old one. That is still
+# not guaranteed on its own: if the re-point is held for the maintenance
+# window (possible on the replication group with redis_apply_immediately =
+# false; the single-node cluster was measured applying it immediately), the
+# old group is still attached and the delete fails. Plan a family change as a
+# staged rollout (re-point with apply_immediately, then remove the old group).
+#
+# Shared by both topologies, same as the subnet group and security group
+# above: there's exactly one parameter group per deployment regardless of
+# which cache resource reads it, so there's nothing to duplicate per topology.
+#
+# `parameter_group_name` is not ForceNew on either resource type (AWS provider
+# schema), so attaching this group modifies the existing cache in place. On
+# the single-node aws_elasticache_cluster the swap was measured live taking
+# effect immediately even with apply_immediately = false (in-sync in about
+# 40 seconds, no reboot). On the replication group it has not been verified
+# live and may wait for the maintenance window. It does not drop
+# the queue the way a ForceNew attribute (e.g. kms_key_id,
+# replication_group_id) would.
+#
+# The reverse is not symmetric. parameter_group_name is Optional+Computed, so
+# a module version without this resource plans no change on the cache and the
+# cache stays attached, while the same apply tries to delete this group and
+# AWS rejects that. README -> "Redis eviction policy" has the rollback steps.
+resource "aws_elasticache_parameter_group" "n8n" {
+  count = var.create_elasticache ? 1 : 0
+
+  name   = "n8n-redis-params-${local.cluster_name}"
+  family = "redis7"
+
+  parameter {
+    name  = "maxmemory-policy"
+    value = var.redis_maxmemory_policy
+  }
+
+  tags = merge(local.common_tags, { Name = "n8n-redis-params-${local.cluster_name}" })
+}
+
 # ── Subnet group ──────────────────────────────────────────────────────────────
 # Shared by both topologies. var.private_subnets already validates >= 2 subnets,
 # which is what multi_az_enabled needs to place the primary and replica apart.
@@ -172,13 +238,14 @@ resource "aws_elasticache_cluster" "n8n" {
 
   # ElastiCache cluster IDs are capped at 20 characters.
   # Pattern: <cluster_name>-redis keeps us within budget for cluster names up to 14 chars.
-  cluster_id         = "${local.cluster_name}-redis"
-  engine             = "redis"
-  engine_version     = "7.1"
-  node_type          = var.redis_node_type
-  num_cache_nodes    = 1
-  subnet_group_name  = aws_elasticache_subnet_group.n8n[0].name
-  security_group_ids = [aws_security_group.redis[0].id]
+  cluster_id           = "${local.cluster_name}-redis"
+  engine               = "redis"
+  engine_version       = "7.1"
+  node_type            = var.redis_node_type
+  num_cache_nodes      = 1
+  parameter_group_name = aws_elasticache_parameter_group.n8n[0].name
+  subnet_group_name    = aws_elasticache_subnet_group.n8n[0].name
+  security_group_ids   = [aws_security_group.redis[0].id]
 
   # Daily snapshot (CKV_AWS_134). n8n uses this Redis as a BullMQ queue/cache,
   # not a source of truth, so a snapshot only shortens recovery of in-flight
@@ -346,8 +413,9 @@ resource "aws_elasticache_replication_group" "n8n" {
   # left var.redis_snapshot_retention_limit alone did not ask for that.
   snapshot_retention_limit = var.redis_snapshot_retention_limit
 
-  subnet_group_name  = aws_elasticache_subnet_group.n8n[0].name
-  security_group_ids = [aws_security_group.redis[0].id]
+  parameter_group_name = aws_elasticache_parameter_group.n8n[0].name
+  subnet_group_name    = aws_elasticache_subnet_group.n8n[0].name
+  security_group_ids   = [aws_security_group.redis[0].id]
 
   tags = merge(local.common_tags, { Name = "${local.cluster_name}-redis-rg" })
 }
@@ -398,14 +466,16 @@ check "redis_tuning_requires_module_managed_elasticache" {
       !var.redis_apply_immediately &&
       !var.redis_kms_encryption_enabled &&
       var.redis_snapshot_retention_limit == 1 &&
-      var.redis_transit_encryption_mode == "required"
+      var.redis_transit_encryption_mode == "required" &&
+      var.redis_maxmemory_policy == "noeviction"
     )
     error_message = join("", [
       "redis_node_type, redis_high_availability_enabled, redis_apply_immediately, ",
-      "redis_kms_encryption_enabled, redis_snapshot_retention_limit or ",
-      "redis_transit_encryption_mode is set while create_elasticache = false. The module creates no ",
-      "ElastiCache in that mode, so none of them apply. Sizing, failover, modification timing, at-rest ",
-      "encryption, snapshot retention and the \"preferred\"/\"required\" migration lever are all ",
+      "redis_kms_encryption_enabled, redis_snapshot_retention_limit, ",
+      "redis_transit_encryption_mode or redis_maxmemory_policy is set while create_elasticache = false. ",
+      "The module creates no ElastiCache in that mode, so none of them apply. Sizing, failover, ",
+      "modification timing, at-rest encryption, snapshot retention, the \"preferred\"/\"required\" ",
+      "migration lever, and the eviction policy on the module-managed parameter group are all ",
       "properties of the replication group the module itself manages; the Redis you supply via ",
       "redis_host has none of them. Its TLS and AUTH posture are controlled by ",
       "redis_transit_encryption_enabled, redis_auth_token and redis_username instead.",

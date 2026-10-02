@@ -13,7 +13,7 @@ This example is two things layered together, same shape as the single-layer exam
 1. **Stand-ins for infrastructure a platform team already has**, all plain Terraform, entirely independent of the `terraform-aws-n8n` module:
    - An `aws_eks_cluster` with its own node group, IAM roles, and `eks-pod-identity-agent` addon (same as `examples/customer-managed-cluster`).
    - An `aws_db_instance` (RDS PostgreSQL) with its own subnet group and security group.
-   - An `aws_elasticache_replication_group` with transit encryption required and an AUTH token (same as `examples/customer-managed-redis`).
+   - An `aws_elasticache_replication_group` with transit encryption required and an AUTH token, and an `aws_elasticache_parameter_group` (family `redis7`, `maxmemory-policy = noeviction`) (same as `examples/customer-managed-redis`).
    - An `aws_s3_bucket` with its own public-access block and SSE-S3 configuration (same as `examples/customer-managed-s3`).
    - A `kubernetes_ingress_v1` and its Route53 alias record, since `create_ingress = false` means the module itself owns none of that either; see "Why this example owns its own Ingress" below.
 2. **A direct `module "controllers"` call** (`source = "../../modules/controllers"`), installing the AWS Load Balancer Controller, Cluster Autoscaler, metrics-server, KEDA, and the EBS CSI driver against the stand-in cluster, standing in for whatever a platform team's own GitOps or IaC would install onto its shared cluster.
@@ -46,7 +46,7 @@ To point this at infrastructure you actually run instead of the stand-ins, layer
 
 - **Cluster**: delete the "Customer-managed EKS cluster (stand-in)" section of `main.tf` and the `kubernetes_version`/`customer_managed_node_*` variables it used; set `existing_eks_cluster_name` to your cluster's name. See `examples/customer-managed-cluster`'s README for the four `existing_eks_cluster_prerequisites_confirmed` items you need to verify yourself on a real shared cluster, and for the `eks-pod-identity-agent` hard prerequisite.
 - **Database**: delete the "Customer-managed RDS" section and `customer_managed_db_*` variables; set `db_host`/`db_password` to your own database's endpoint and password.
-- **Redis**: delete the "Customer-managed Redis" section and `customer_managed_redis_*` variables; set `redis_host`/`redis_auth_token`/`redis_transit_encryption_enabled` to your own Redis's coordinates. See `examples/customer-managed-redis`'s README for the AUTH/TLS specifics.
+- **Redis**: delete the "Customer-managed Redis" section and `customer_managed_redis_*` variables; set `redis_host`/`redis_auth_token`/`redis_transit_encryption_enabled` to your own Redis's coordinates. See `examples/customer-managed-redis`'s README for the AUTH/TLS specifics and for checking your Redis's `maxmemory-policy`, which the deleted stand-in set to `noeviction`.
 - **S3**: delete the "Customer-managed S3" section and `customer_managed_s3_force_destroy`; set `existing_s3_bucket_name` to your own bucket's name.
 - **Controllers**: if your platform team's own GitOps already installs LBC/Cluster Autoscaler/metrics-server/KEDA/EBS CSI, delete the `module "controllers"` call entirely; the IAM roles and Pod Identity associations those controllers need still have to exist somewhere, though, so either keep invoking `modules/controllers` (with only the toggles you actually need, `install_*` per-controller) for the IAM wiring alone, or otherwise make sure each ServiceAccount's Pod Identity binding is provisioned another way.
 - **Ingress**: if your platform team fronts everything with its own Ingress/ALB convention, delete `ingress.tf`/`dns.tf` and set `create_ingress = false` with no replacement Ingress here, wiring your own routing to `module.n8n`'s `n8n_service_name`/`n8n_webhook_service_name` outputs instead.
@@ -112,6 +112,7 @@ Same structural limitation as [`examples/customer-managed-cluster`](../customer-
 | [aws_eks_addon.customer_managed_pod_identity](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/eks_addon) | resource |
 | [aws_eks_cluster.customer_managed](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/eks_cluster) | resource |
 | [aws_eks_node_group.customer_managed](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/eks_node_group) | resource |
+| [aws_elasticache_parameter_group.customer_managed](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/elasticache_parameter_group) | resource |
 | [aws_elasticache_replication_group.customer_managed](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/elasticache_replication_group) | resource |
 | [aws_elasticache_subnet_group.customer_managed](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/elasticache_subnet_group) | resource |
 | [aws_iam_role.customer_managed_cluster](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_role) | resource |

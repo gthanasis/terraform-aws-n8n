@@ -854,6 +854,124 @@ provider converges that change in stages, so one apply does not enable automatic
 failover. Follow [Adding high availability to an encrypted group](#adding-high-availability-to-an-encrypted-group)
 for the measured sequence, and still drain first.
 
+## Redis eviction policy
+
+Without a parameter group of their own, both ElastiCache topologies run on
+the `redis7` family's default parameter group. AWS documents the default
+`maxmemory-policy` for node-based clusters as `volatile-lru`
+([engine-specific parameters](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html)):
+once Redis runs out of memory it evicts keys that carry a TTL, chosen by
+least-recently-used estimation. Some of n8n's Bull queue keys carry a TTL,
+such as job locks, so `volatile-lru` can silently remove queue state under
+memory pressure instead of failing loudly.
+
+`redis_maxmemory_policy` (default `"noeviction"`) is wired into a
+module-managed `aws_elasticache_parameter_group` (family `redis7`) attached
+to whichever topology is active. With `noeviction`, a full Redis evicts
+nothing and **rejects writes that need more memory with an out-of-memory
+(OOM) error**. This makes the failure visible. It does not make it harmless:
+
+- **The queue is not the only thing in this Redis.** In queue mode, n8n also
+  keeps its cache in Redis (`N8N_CACHE_BACKEND` defaults to `auto`, which
+  selects Redis in queue mode), with a one-hour TTL by default. Under
+  `volatile-lru` those cache keys can be evicted, but so can any other key
+  with a TTL, such as a Bull job lock: the policy picks the least recently
+  used key among all of them, not the cache first. Under `noeviction` they keep their memory until they expire, and cache writes
+  fail with the same OOM error as everything else.
+- **Writes other than enqueue fail too.** Enqueueing a new execution fails.
+  So can a Bull job-lock renewal. A job whose lock lapses is treated as
+  stalled, and n8n sets Bull's `maxStalledCount` to `0`, so that execution
+  fails rather than being retried. Leader election in multi-main may also be
+  affected.
+
+Plan Redis memory for the queue and the cache together, and alert well
+before the node is full: the ElastiCache `DatabaseMemoryUsagePercentage`
+metric, or `INFO memory` from a debug pod (`CONFIG GET` is restricted on
+ElastiCache). After an OOM event, check the execution list for executions
+that failed during it.
+
+```hcl
+module "n8n" {
+  # ...
+  redis_maxmemory_policy = "noeviction" # the default; shown for clarity
+}
+```
+
+**Upgrade impact:** the first apply after upgrading creates the parameter
+group and changes `parameter_group_name` on the existing cache **in place**.
+`parameter_group_name` does not force replacement on either
+`aws_elasticache_cluster` or `aws_elasticache_replication_group` (AWS
+provider schema), so the cache and its queue stay.
+
+When the new association takes effect depends on the topology:
+
+- **Single-node cluster (the default):** measured on a live
+  `examples/small` deployment with `redis_apply_immediately = false`, the
+  swap took effect immediately anyway. The parameter group status went from
+  `applying` to `in-sync` in about 40 seconds, with no pending modification
+  and no node reboot, and the next `terraform plan` was clean. Do not rely on
+  `redis_apply_immediately = false` to defer it to the maintenance window.
+- **Replication group (HA, TLS or CMK enabled):** not verified live. AWS may
+  hold the change for the maintenance window when
+  `redis_apply_immediately = false`, in which case `terraform plan` keeps
+  showing it until then. After applying, check the replication group's
+  member clusters with the `describe-cache-clusters` command below and
+  confirm each shows the new group with `ParameterApplyStatus` `in-sync`.
+
+With `redis_apply_immediately = true`, AWS also applies any other
+modification already pending on the cache. Later edits to `redis_maxmemory_policy` change a dynamic
+parameter inside the group, which AWS applies right away regardless of
+`redis_apply_immediately`. To confirm the policy is active, check
+`maxmemory_policy` in `INFO memory`.
+
+**Before upgrading,** check which parameter group your cache uses today:
+
+```sh
+aws elasticache describe-cache-clusters \
+  --query 'CacheClusters[].[CacheClusterId,CacheParameterGroup.CacheParameterGroupName,CacheParameterGroup.ParameterApplyStatus]'
+```
+
+If it is not `default.redis7`, someone attached a custom group outside
+Terraform. This upgrade replaces it with the module's group, so copy any
+other overrides you need before you apply.
+
+**To keep the old eviction behavior,** set
+`redis_maxmemory_policy = "volatile-lru"`. The cache still moves to the
+module's parameter group, but the policy matches the family default.
+
+**Avoid the `allkeys-*` policies** (`allkeys-lru`, `allkeys-lfu`,
+`allkeys-random`) for this Redis. They can evict any key, including Bull's
+job data, which has no TTL and which neither `noeviction` nor `volatile-lru`
+ever evicts. The module accepts them because ElastiCache does, but they are
+worse for a queue than the old default.
+
+**Rolling back to an earlier module version fails if you only change the
+version.** `parameter_group_name` is optional and computed, so removing it
+from the configuration plans no change and the cache stays attached to the
+module's group. The same apply then tries to delete that group, and AWS
+refuses to delete a parameter group that is still in use. To roll back:
+
+1. If you only want the old eviction behavior, stay on this version and set
+   `redis_maxmemory_policy = "volatile-lru"`. Nothing else is needed.
+2. For a full rollback, attach the default group first, outside Terraform:
+
+   ```sh
+   # Single-node cluster (the default topology):
+   aws elasticache modify-cache-cluster --cache-cluster-id <cluster_name>-redis \
+     --cache-parameter-group-name default.redis7 --apply-immediately
+   # Replication group (HA, TLS or CMK enabled):
+   aws elasticache modify-replication-group --replication-group-id <cluster_name>-redis-rg \
+     --cache-parameter-group-name default.redis7 --apply-immediately
+   ```
+
+3. Wait until the cache reports `default.redis7` with no pending
+   modifications, then pin the earlier module version and apply.
+
+Ignored when `create_elasticache = false`
+(`check.redis_tuning_requires_module_managed_elasticache` warns if it is set
+alongside a customer-managed Redis): the eviction policy of the Redis you
+supply via `redis_host` is yours to configure.
+
 ## Redis in-transit encryption and AUTH
 
 By default the module secures its ElastiCache queue backend by **network
@@ -2195,6 +2313,7 @@ doing at this node count, but neither removes the fivefold waste at source.
 | [aws_eks_node_group.n8n](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/eks_node_group) | resource |
 | [aws_eks_pod_identity_association.s3](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/eks_pod_identity_association) | resource |
 | [aws_elasticache_cluster.n8n](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/elasticache_cluster) | resource |
+| [aws_elasticache_parameter_group.n8n](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/elasticache_parameter_group) | resource |
 | [aws_elasticache_replication_group.n8n](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/elasticache_replication_group) | resource |
 | [aws_elasticache_subnet_group.n8n](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/elasticache_subnet_group) | resource |
 | [aws_iam_policy.external_secrets](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/iam_policy) | resource |
@@ -2444,6 +2563,7 @@ doing at this node count, but neither removes the fivefold waste at source.
 | <a name="input_redis_host"></a> [redis\_host](#input\_redis\_host) | Customer-managed Redis host. Required when create\_elasticache = false. Ignored otherwise. Must be reachable from the EKS node subnets on redis\_port; the module creates no security group on this path, so the rules that let the nodes in are the caller's to write. AUTH (redis\_auth\_token / redis\_auth\_token\_secret\_ref) and TLS (redis\_transit\_encryption\_enabled) are both optional on this path, matching what the endpoint actually requires: leave both unset if it accepts unauthenticated, non-TLS connections. For a replication group the caller manages, use its primary endpoint rather than a node address, so the name follows the primary across a failover. | `string` | `null` | no |
 | <a name="input_redis_key_prefix"></a> [redis\_key\_prefix](#input\_redis\_key\_prefix) | Prefix for every Redis key this n8n deployment uses: both n8n's own key prefix (N8N\_REDIS\_KEY\_PREFIX, n8n's default is "n8n") and the Bull queue's own key prefix (QUEUE\_BULL\_PREFIX, n8n's default is "bull"), which this module sets to the same value so a single input keeps both in sync. Leave null (the default) to keep n8n's own defaults on both -- exactly today's behavior. Set this to a value unique per deployment whenever two or more n8n deployments (from this module or otherwise) point at the SAME external Redis (create\_elasticache = false with redis\_host shared across deployments), which the module cannot itself detect or prevent: without distinct prefixes, n8n's scaling-mode pub/sub command channel ("<prefix>:n8n.commands") is not scoped per deployment, and one deployment's workflow-activation broadcast is received by every other deployment sharing that Redis, each of which looks the workflow up in its own database, fails, and publishes an error back onto the same shared channel -- confirmed live, not theoretical. Each module-managed ElastiCache instance (create\_elasticache = true, the default) is already dedicated to one deployment, so this has no effect worth setting there. Also updates the KEDA worker ScaledObject's listName metadata (scaling.tf) to "<prefix>:jobs:wait" / "<prefix>:jobs:active": leaving those at the literal "bull:jobs:*" while Bull itself writes under a different prefix would leave KEDA reading an empty list and queue-depth autoscaling permanently frozen at zero. | `string` | `null` | no |
 | <a name="input_redis_kms_encryption_enabled"></a> [redis\_kms\_encryption\_enabled](#input\_redis\_kms\_encryption\_enabled) | When true, encrypt Redis at rest with a module-created Customer Managed KMS Key (aws\_kms\_key.redis). Defaults to false, which leaves the default standalone aws\_elasticache\_cluster unencrypted at rest: Redis OSS at-rest encryption is available only on aws\_elasticache\_replication\_group. Existing replication-group paths selected by HA or TLS are encrypted with the ElastiCache-managed key because redis.tf sets at\_rest\_encryption\_enabled = true there. kms\_key\_id is also replication-group-only, so this is one of three variables (alongside redis\_high\_availability\_enabled and redis\_transit\_encryption\_enabled) that independently select the replication group. Setting this true on a default deployment replaces the standalone cache with a one-node replication group and drops queued work; drain the queue and use a maintenance window. On an existing replication group, changing kms\_key\_id is also ForceNew. The CMK rotates annually and uses a 7-day deletion window (AWS minimum). Ignored when create\_elasticache = false. | `bool` | `false` | no |
+| <a name="input_redis_maxmemory_policy"></a> [redis\_maxmemory\_policy](#input\_redis\_maxmemory\_policy) | Eviction policy for the module-managed ElastiCache Redis, written to a module-managed aws\_elasticache\_parameter\_group's maxmemory-policy parameter and attached to whichever topology redis\_high\_availability\_enabled, redis\_transit\_encryption\_enabled, or redis\_kms\_encryption\_enabled selects. Defaults to "noeviction": AWS documents the maxmemory-policy default for node-based clusters as volatile-lru (https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/ParameterGroups.Engine.html), which evicts keys carrying a TTL once Redis runs out of memory, and some of n8n's Bull queue keys (job locks) carry a TTL, so queue state could be silently removed under memory pressure. With noeviction, a full Redis instead rejects every write that needs memory with an OOM error: enqueues, Bull lock renewals (n8n does not retry a stalled job), and n8n's cache, which shares this Redis in queue mode. Size Redis for the queue and the cache together and alert on memory use; see README -> "Redis eviction policy". maxmemory-policy is a dynamic parameter: AWS applies a change to it immediately on every node already using the parameter group, independent of redis\_apply\_immediately. Changing this input therefore takes effect on the next apply, not at the next maintenance window, regardless of how redis\_apply\_immediately is set. The first attach of the parameter group on upgrade was also observed to take effect immediately with redis\_apply\_immediately = false on the single-node aws\_elasticache\_cluster (live test, in-sync within about 40 seconds, no reboot); the replication-group topology has not been verified live, so check the cache's parameter group status after applying there. Pin this to volatile-lru to keep pre-existing eviction behavior unchanged. Avoid the allkeys-* policies: they can also evict Bull job data, which has no TTL, so they are worse for the queue than the old default. Rolling back to a module version without this input needs a manual step first; see the README. | `string` | `"noeviction"` | no |
 | <a name="input_redis_node_type"></a> [redis\_node\_type](#input\_redis\_node\_type) | ElastiCache node type (cache.t3.medium ~$25/month). Sizes the single node when redis\_high\_availability\_enabled = false, and every node in the replication group when it is true, so the Redis line of the bill scales with the node count, not just the type. Ignored when create\_elasticache = false. | `string` | `"cache.t3.medium"` | no |
 | <a name="input_redis_port"></a> [redis\_port](#input\_redis\_port) | Port of the external Redis specified by redis\_host. Ignored when create\_elasticache = true, because module-managed ElastiCache always listens on 6379. | `number` | `6379` | no |
 | <a name="input_redis_snapshot_retention_limit"></a> [redis\_snapshot\_retention\_limit](#input\_redis\_snapshot\_retention\_limit) | Number of daily automatic ElastiCache snapshots to retain. 0 disables snapshots. Defaults to 1: this Redis backs n8n's BullMQ queue, not a source of truth, so a snapshot only shortens recovery of in-flight queued executions after a failure. Applies to both Redis topologies, the single-node cluster and the replication group selected by redis\_high\_availability\_enabled, redis\_transit\_encryption\_enabled, or redis\_kms\_encryption\_enabled. Clears Checkov finding CKV\_AWS\_134. | `number` | `1` | no |

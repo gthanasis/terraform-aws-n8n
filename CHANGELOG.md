@@ -53,6 +53,44 @@ this project adheres to the stability contract in
   address. This makes the change a minor-version
   boundary under [Stability & versioning](./README.md#stability--versioning),
   not a patch.
+
+- **`redis_maxmemory_policy`** (default `"noeviction"`, validated against the
+  ElastiCache Redis/Valkey maxmemory-policy enum). Wired into a new
+  module-managed `aws_elasticache_parameter_group` (family `redis7`,
+  attached via `parameter_group_name` to both `aws_elasticache_cluster.n8n`
+  and `aws_elasticache_replication_group.n8n`, whichever topology is
+  active). Without this, both topologies ran on the `redis7` family's
+  *default* parameter group, whose AWS-documented `maxmemory-policy`
+  default for node-based clusters is `volatile-lru`: once Redis fills up it
+  evicts keys carrying a TTL, and some of n8n's Bull queue keys (job locks)
+  carry one, so queue state could be silently removed under memory
+  pressure. `noeviction` makes a full Redis reject writes with an
+  out-of-memory error instead. That covers more than enqueue: Bull lock
+  renewals fail too (n8n does not retry a stalled job), and n8n's cache
+  shares this Redis in queue mode, so size and alert on memory for both.
+  **Upgrade impact:** existing deployments change behavior on the next
+  apply. `parameter_group_name` does not force replacement on either
+  ElastiCache resource type (AWS provider schema), so the first apply
+  creates the group and modifies the cache in place. On the default
+  single-node cluster this took effect immediately in a live test even with
+  `redis_apply_immediately = false` (in-sync in about 40 seconds, no
+  reboot), so it is not deferred to the maintenance window. The replication
+  group topology is not verified live and may wait for the window unless
+  `redis_apply_immediately = true`, which also applies any other pending
+  modification. A custom
+  parameter group attached outside Terraform is replaced; check yours
+  first. To keep the old eviction behavior, set
+  `redis_maxmemory_policy = "volatile-lru"`. **Rollback:** pinning an
+  earlier module version alone fails, because the cache stays attached to
+  the module's group and AWS refuses to delete a group in use. Attach
+  `default.redis7` to the cache first; README → "Redis eviction policy"
+  has the commands. Extends
+  `check.redis_tuning_requires_module_managed_elasticache` to also warn when
+  this is set while `create_elasticache = false`. The
+  `customer-managed-redis` and `customer-managed-everything` examples' own
+  stand-in replication groups now also run `noeviction` on a matching
+  stand-in parameter group, as a good-practice example for a caller-owned
+  Redis feeding n8n's Bull queue. See README → "Redis eviction policy".
 - **`n8n_worker_keda_pause` and `n8n_worker_keda_paused_replica_count`**
   (chart `keda.worker.pause` / `pausedReplicaCount`). `pause = true`
   annotates the default worker `ScaledObject` with
