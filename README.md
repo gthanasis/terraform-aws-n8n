@@ -103,7 +103,7 @@ The module declares `required_providers` but does **not** configure them. Caller
 
 `node_min` and `node_max` are the EKS node group's autoscaling bounds. `node_min` is your steady-state floor — you pay for those nodes 24/7 even when idle. `node_max` is a hard ceiling: if peak workload needs more nodes than allowed, pods stay `Pending`. Defaults fit the `small` example only; see the Examples table for production sizing.
 
-For a full end-to-end example including the VPC, see [`examples/small/`](./examples/small/) (Route 53), [`examples/cloudflare/`](./examples/cloudflare/), or [`examples/godaddy/`](./examples/godaddy/). If `terraform apply` fails on a `helm_release` (most often due to a Helm 4 cache layout issue or a webhook race on first install), see [`docs/troubleshooting.md`](./docs/troubleshooting.md).
+For a full end-to-end example including the VPC, see [`examples/small/`](./examples/small/) (Route 53), [`examples/cloudflare/`](./examples/cloudflare/), or [`examples/godaddy/`](./examples/godaddy/). If `terraform apply` fails on a `helm_release` (most often due to a Helm 4 cache layout issue or a webhook race on first install), see [`docs/troubleshooting.md`](./docs/troubleshooting.md). For a one-table summary of what this module does versus what the caller owns, see [`docs/shared-responsibility.md`](./docs/shared-responsibility.md).
 
 ## Support
 
@@ -234,12 +234,17 @@ quickly; several are candidates for future minor releases (see
   the charts and controller images at the mirror.
 
 - **Backup/DR automation beyond RDS snapshots.** The module enables
-  RDS automated backups (defaulting to RDS's own defaults). It does
-  *not* automate restore drills, cross-region snapshot copy, S3
-  versioning policy, or n8n encryption-key escrow. The
-  `n8n_encryption_key` output is emitted exactly once at apply time;
-  backing it up is the operator's job and is the single most
-  important thing they will forget.
+  RDS automated backups (`db_backup_retention_period`, default 7 days)
+  and daily ElastiCache snapshots (`redis_snapshot_retention_limit`,
+  default 1 day). It does *not* automate restore drills, cross-region
+  snapshot copy, S3 versioning policy, or n8n encryption-key escrow.
+  On the default path, the `n8n_encryption_key` output is stored in
+  Terraform state and readable at any time, but state is not a backup:
+  copying the key somewhere safe outside state is the operator's job
+  and is the single most important thing they will forget. With
+  `n8n_encryption_key_secret_ref` set, the output is null and the key
+  lives only in the caller's Secret, so backing it up is that Secret
+  owner's job.
 
 - **Bundled observability.** The module installs KEDA (for worker
   autoscaling) and metrics-server (for HPA on mains/webhooks) because
@@ -249,6 +254,14 @@ quickly; several are candidates for future minor releases (see
   endpoint; scrape configuration is the caller's monitoring stack.
   Rationale: observability stacks are deeply opinionated per-org;
   bundling one is more harmful than helpful.
+
+- **Cluster security add-ons, egress firewalling, and alerting.** GuardDuty
+  EKS Runtime Monitoring, Security Hub, Pod Security admission policy, a
+  NAT gateway or egress firewall, and CloudWatch alarms/dashboards beyond
+  the log groups the module already manages are not created. See
+  [`docs/shared-responsibility.md`](./docs/shared-responsibility.md) for
+  the full ownership breakdown of what this module does versus what the
+  caller owns.
 
 ## Customer-managed infrastructure
 
