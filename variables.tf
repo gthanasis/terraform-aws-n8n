@@ -497,6 +497,18 @@ variable "alb_ssl_policy" {
   }
 }
 
+variable "n8n_proxy_hops" {
+  description = "Number of trusted reverse-proxy hops in front of n8n, rendered as N8N_PROXY_HOPS on every n8n pod (main, worker, webhook processor) via config.extraEnv. n8n passes it to Express's trust proxy setting, which uses it to pick the client IP out of X-Forwarded-For; any value of 1 or more also makes n8n honor X-Forwarded-Proto. Count every proxy on the client's path that adds an X-Forwarded-For entry (HTTP proxies such as CloudFront, an ALB or an Istio gateway do; a TCP passthrough NLB does not), whatever create_ingress is set to: an ALB alone (the module's own Ingress, or a caller-owned one) is 1, so the default fits it; CloudFront in front of the ALB, or an ALB in front of an Istio ingress gateway, is 2. Too low a value attributes every request to the nearest extra proxy's IP. A value above 1 is only safe when the inner proxy accepts traffic from the outer one alone (e.g. an ALB restricted to CloudFront, see alb_inbound_prefix_list_ids): otherwise a client that reaches the inner proxy directly can forge its IP through X-Forwarded-For. At any value of 1 or more, the same holds for anything that bypasses the declared proxy chain, such as an in-cluster caller reaching the n8n Services directly. Set 0 only when nothing proxies traffic to n8n. Reserved in n8n_managed_env_names, so n8n_extra_env, n8n_worker_extra_env and n8n_worker_pools[*].extra_env cannot set it."
+  type        = number
+  default     = 1
+  nullable    = false
+
+  validation {
+    condition     = var.n8n_proxy_hops >= 0 && var.n8n_proxy_hops == floor(var.n8n_proxy_hops)
+    error_message = "n8n_proxy_hops must be a whole number of at least 0."
+  }
+}
+
 # ── Nodes ─────────────────────────────────────────────────────────────────────
 # Multi-main runs 6+ pods (2 main, 2 workers, 2 webhook processors).
 # 3 × t3.medium provides enough headroom at startup; HPA scales further.

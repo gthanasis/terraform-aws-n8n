@@ -6776,6 +6776,112 @@ run "license_detach_floating_on_shutdown_defaults_to_false" {
   }
 }
 
+# ── n8n_proxy_hops ───────────────────────────────────────────────────────────
+# N8N_PROXY_HOPS is asserted against local.n8n_proxy_hops_env, not
+# helm_release.n8n directly: that resource depends on kubernetes_namespace,
+# which is "(known after apply)" under the mock provider, so its values blob
+# is unknown at plan time. The local has no such dependency, carries the exact
+# config.extraEnv entry n8n.tf renders, and is known at plan, so it is where
+# the rendered value is actually assertable.
+
+run "proxy_hops_defaults_to_one" {
+  command = plan
+
+  assert {
+    # The module's own ALB Ingress is one hop, so this must match it by
+    # default or create_ingress = true deployments misattribute client IPs
+    # and TLS termination state out of the box.
+    condition     = local.n8n_proxy_hops_env.value == "1"
+    error_message = "n8n_proxy_hops must default to 1 to match the module's own single-hop ALB Ingress."
+  }
+}
+
+run "proxy_hops_accepts_override_for_extra_hop" {
+  command = plan
+
+  variables {
+    n8n_proxy_hops = 2
+  }
+
+  assert {
+    condition     = local.n8n_proxy_hops_env.value == "2"
+    error_message = "n8n_proxy_hops must accept an override for a caller-owned ingress with an extra hop in front of the ALB (e.g. CloudFront), and that override must reach the rendered N8N_PROXY_HOPS env entry."
+  }
+}
+
+run "rejects_negative_n8n_proxy_hops" {
+  command = plan
+
+  variables {
+    n8n_proxy_hops = -1
+  }
+
+  expect_failures = [var.n8n_proxy_hops]
+}
+
+run "rejects_fractional_n8n_proxy_hops" {
+  command = plan
+
+  variables {
+    n8n_proxy_hops = 1.5
+  }
+
+  expect_failures = [var.n8n_proxy_hops]
+}
+
+run "extra_env_rejects_proxy_hops_name" {
+  command = plan
+
+  variables {
+    n8n_extra_env = [
+      { name = "N8N_PROXY_HOPS", value = "5" },
+    ]
+  }
+
+  expect_failures = [var.n8n_extra_env]
+}
+
+# 0 is the lower bound the validation allows: no proxy in front of n8n.
+run "proxy_hops_accepts_zero" {
+  command = plan
+
+  variables {
+    n8n_proxy_hops = 0
+  }
+
+  assert {
+    condition     = local.n8n_proxy_hops_env == { name = "N8N_PROXY_HOPS", value = "0" }
+    error_message = "n8n_proxy_hops = 0 must be accepted and render N8N_PROXY_HOPS=0."
+  }
+}
+
+# The reservation covers every escape hatch, not only n8n_extra_env. Before this
+# input existed all three accepted the name, which is the upgrade break the
+# CHANGELOG notes.
+run "worker_extra_env_rejects_proxy_hops_name" {
+  command = plan
+
+  variables {
+    n8n_worker_extra_env = [{ name = "N8N_PROXY_HOPS", value = "2" }]
+  }
+
+  expect_failures = [var.n8n_worker_extra_env]
+}
+
+run "worker_pools_reject_proxy_hops_name" {
+  command = plan
+
+  variables {
+    n8n_chart_version = "1.11.0-preview.workerpools.1"
+    n8n_worker_pools = [{
+      name      = "gpu"
+      extra_env = [{ name = "N8N_PROXY_HOPS", value = "2" }]
+    }]
+  }
+
+  expect_failures = [var.n8n_worker_pools]
+}
+
 # ── n8n_extra_env ────────────────────────────────────────────────────────────
 # Asserted at the variable-contract level: defaults, accepted shape, and the
 # three validation guards (non-empty name, no duplicates, no collision with

@@ -664,6 +664,7 @@ locals {
     "N8N_PORT",
     "N8N_PROTOCOL",
     "N8N_EDITOR_BASE_URL",
+    "N8N_PROXY_HOPS",
     "N8N_DISABLE_PRODUCTION_MAIN_PROCESS",
     "N8N_NATIVE_PYTHON_RUNNER",
     "TZ",
@@ -818,4 +819,13 @@ locals {
   # variable's "null omits the block entirely" promise true for every
   # equivalent-to-unset shape.
   n8n_dns_config = length(local.n8n_dns_config_stripped) == 0 ? null : local.n8n_dns_config_stripped
+
+  # The config.extraEnv entry for N8N_PROXY_HOPS, extracted so
+  # tests/defaults.tftest.hcl can assert the rendered entry directly.
+  # helm_release.n8n depends on kubernetes_namespace, whose attributes are
+  # unknown at plan under the mock provider, so the resource's own values
+  # argument can't be asserted there; this local has no such dependency and
+  # is known at plan. See n8n.tf's config.extraEnv and the n8n_proxy_hops
+  # variable description.
+  n8n_proxy_hops_env = { name = "N8N_PROXY_HOPS", value = tostring(var.n8n_proxy_hops) }
 }
