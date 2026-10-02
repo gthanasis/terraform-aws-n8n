@@ -2158,9 +2158,72 @@ variable "db_postgresdb_pool_size" {
 }
 
 variable "db_postgresdb_ssl_enabled" {
-  description = "Whether n8n connects to the database over SSL. Set to true (the default) for direct connections to RDS or Aurora — they use the AWS CA which Node.js doesn't trust by default, so the connection still negotiates SSL but skips certificate verification. Set to false when n8n connects to an in-cluster connection pooler (e.g. PgBouncer) that handles SSL on its upstream leg — the pod-to-pod traffic stays inside the cluster network."
+  description = "Whether n8n connects to the database over SSL. Set to true (the default) for direct connections to RDS or Aurora. By default the connection is encrypted but the server certificate is not verified, because the RDS CA is not in Node.js's default trust store; set db_postgresdb_ssl_reject_unauthorized = true and db_postgresdb_ssl_ca_pem to verify it (see docs/postgresql-tls.md). Set to false when n8n connects to an in-cluster connection pooler (e.g. PgBouncer) that handles SSL on its upstream leg. The pod-to-pod traffic then stays inside the cluster network."
   type        = bool
   default     = true
+
+  # null is not meaningful here: a caller writing x = null in a module block
+  # would propagate null into the validation/check conditions below rather
+  # than falling back to true, and Terraform rejects a null condition
+  # outright ("condition value must be a boolean"). See AGENTS.md on nullable.
+  nullable = false
+}
+
+variable "db_postgresdb_ssl_reject_unauthorized" {
+  description = "Whether n8n validates the database server's TLS certificate against a trusted CA, instead of only encrypting the connection. Maps to DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED. Defaults to false, preserving the module's existing behavior described on db_postgresdb_ssl_enabled: a direct connection to RDS/Aurora negotiates TLS but skips certificate verification, because RDS's server certificate chains to Amazon's own RDS-specific CA (rds-ca-rsa2048-g1 and friends), which is not in Node.js's default trust store (unlike Amazon's public Amazon Trust Services roots). Set to true to verify the certificate; supply db_postgresdb_ssl_ca_pem with the RDS CA bundle unless the pod image's own trust store already carries it. Ignored when db_postgresdb_ssl_enabled = false (there is no TLS connection to verify the certificate of), which check.db_postgresdb_ssl_reject_unauthorized_requires_ssl_enabled flags. See docs/postgresql-tls.md."
+  type        = bool
+  default     = false
+
+  # null is not meaningful here: a caller writing x = null in a module block
+  # would propagate null into the conditional below rather than falling back
+  # to false, and Terraform rejects a null condition outright ("condition
+  # value must be a boolean"). See AGENTS.md on nullable.
+  nullable = false
+}
+
+variable "db_postgresdb_ssl_ca_pem" {
+  description = "PEM-encoded CA certificate bundle n8n trusts for the database TLS connection, covering both the module-managed RDS path and the external db_host path. When set, the module renders it into a module-managed kubernetes_config_map_v1, mounts it read-only at /etc/n8n/postgres-ssl-ca/ca.pem on the main, worker, and webhook-processor pods, and sets DB_POSTGRESDB_SSL_CA_FILE to that path. Required in practice for db_postgresdb_ssl_reject_unauthorized = true against the module-managed RDS instance: AWS's RDS CA is not a publicly trusted root, so Node.js rejects the server certificate without it. Download the regional or combined bundle from https://truststore.pki.rds.amazonaws.com (e.g. global-bundle.pem) and pass it with file(); the module never fetches it itself. See docs/postgresql-tls.md for the full procedure and AWS's CA rotation schedule. Ignored (with a plan-time warning) when db_postgresdb_ssl_enabled = false or db_postgresdb_ssl_reject_unauthorized = false, since nothing validates the certificate against it in that case. Defaults to null, which omits the ConfigMap, volume, and mount entirely and changes nothing for existing deployments."
+  type        = string
+  default     = null
+
+  # Requires PEM certificate framing rather than only rejecting an empty
+  # string: a non-empty value that is not actually PEM-encoded (e.g. a DER
+  # blob, a truncated download, or plain text) previously passed this
+  # validation unnoticed, reached kubernetes_config_map_v1.postgres_ssl_ca
+  # and the mounted file, and only surfaced as a connection failure once n8n
+  # tried to parse it. (?s) makes "." match newlines so a multi-certificate
+  # bundle (e.g. AWS's global-bundle.pem) still matches end to end; this does
+  # not parse the certificate itself, only its framing.
+  validation {
+    condition     = var.db_postgresdb_ssl_ca_pem == null ? true : can(regex("(?s)^\\s*-----BEGIN CERTIFICATE-----.*-----END CERTIFICATE-----\\s*$", var.db_postgresdb_ssl_ca_pem))
+    error_message = "db_postgresdb_ssl_ca_pem must be null or a PEM-encoded CA bundle (containing -----BEGIN CERTIFICATE----- / -----END CERTIFICATE----- delimiters)."
+  }
+
+  # Both collision checks below are gated on db_postgresdb_ssl_enabled, not
+  # only on db_postgresdb_ssl_ca_pem being set: the volume and mount they
+  # guard are themselves gated on db_postgresdb_ssl_enabled (see n8n.tf and
+  # locals.tf's n8n_extra_volumes / n8n_extra_volume_mounts), so with SSL off
+  # (e.g. an in-cluster pooler terminating TLS on its own upstream leg) the
+  # module never creates either one, and there is nothing for a caller's
+  # n8n_extra_volumes / n8n_extra_volume_mounts entry to collide with.
+  validation {
+    condition = (var.db_postgresdb_ssl_ca_pem == null || !var.db_postgresdb_ssl_enabled) ? true : alltrue([
+      for volume in var.n8n_extra_volumes : volume.name != "postgres-ssl-ca"
+    ])
+    error_message = "db_postgresdb_ssl_ca_pem reserves the volume name \"postgres-ssl-ca\" while db_postgresdb_ssl_enabled = true. Rename or remove the conflicting n8n_extra_volumes entry."
+  }
+
+  # Reserves the directory and everything under it, not only the exact path:
+  # a caller mount at /etc/n8n/postgres-ssl-ca/ca.pem (with sub_path) would
+  # replace the managed CA file, while the checksum/postgres-ssl-ca pod
+  # annotation would still hash db_postgresdb_ssl_ca_pem.
+  validation {
+    condition = (var.db_postgresdb_ssl_ca_pem == null || !var.db_postgresdb_ssl_enabled) ? true : alltrue([
+      for mount in var.n8n_extra_volume_mounts :
+      mount.mount_path != "/etc/n8n/postgres-ssl-ca" && !startswith(mount.mount_path, "/etc/n8n/postgres-ssl-ca/")
+    ])
+    error_message = "db_postgresdb_ssl_ca_pem reserves the mount path \"/etc/n8n/postgres-ssl-ca\" and every path under it while db_postgresdb_ssl_enabled = true. Move or remove the conflicting n8n_extra_volume_mounts entry."
+  }
 }
 
 # ── ElastiCache Redis ──────────────────────────────────────────────────────────

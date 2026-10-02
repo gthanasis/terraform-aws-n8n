@@ -880,3 +880,47 @@ check "rds_tuning_requires_module_managed_database" {
     ])
   }
 }
+
+# ── PostgreSQL SSL certificate verification ───────────────────────────────────
+# Two non-blocking warnings covering the ways db_postgresdb_ssl_reject_unauthorized
+# and db_postgresdb_ssl_ca_pem (variables.tf) can be set to something that
+# renders but does nothing, mirroring the guard-style checks elsewhere in this
+# file (e.g. rds_tuning_requires_module_managed_database above).
+
+check "db_postgresdb_ssl_reject_unauthorized_requires_ssl_enabled" {
+  assert {
+    condition = var.db_postgresdb_ssl_reject_unauthorized ? var.db_postgresdb_ssl_enabled : true
+    error_message = join("", [
+      "db_postgresdb_ssl_reject_unauthorized = true, but db_postgresdb_ssl_enabled = false, so there is no ",
+      "TLS connection for n8n to verify the certificate of: DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED is never ",
+      "rendered in that case. Set db_postgresdb_ssl_enabled = true to actually enable TLS, or leave ",
+      "db_postgresdb_ssl_reject_unauthorized at its default.",
+    ])
+  }
+}
+
+check "db_postgresdb_ssl_ca_pem_requires_verification" {
+  assert {
+    condition = var.db_postgresdb_ssl_ca_pem != null ? (
+      var.db_postgresdb_ssl_enabled && var.db_postgresdb_ssl_reject_unauthorized
+    ) : true
+    # The "still render, for nothing" clause only ever applies on the
+    # reject_unauthorized = false branch: there, db_postgresdb_ssl_enabled is
+    # true, so the ConfigMap, volume, and mount (n8n.tf, locals.tf) all exist,
+    # just unused. On the ssl_enabled = false branch none of the three exist
+    # at all (all three are gated on ssl_enabled && ca_pem != null), so saying
+    # they "render" would send a caller hunting for a ConfigMap that was never
+    # created.
+    error_message = var.db_postgresdb_ssl_enabled ? join("", [
+      "db_postgresdb_ssl_ca_pem is set, but db_postgresdb_ssl_reject_unauthorized is false, so n8n never ",
+      "validates the database server certificate against it: the ConfigMap and volume mount still render, ",
+      "for nothing. Set db_postgresdb_ssl_reject_unauthorized = true to actually verify the certificate, or ",
+      "remove db_postgresdb_ssl_ca_pem.",
+      ]) : join("", [
+      "db_postgresdb_ssl_ca_pem is set, but db_postgresdb_ssl_enabled is false, so there is no TLS connection ",
+      "for n8n to verify a certificate on: the ConfigMap and volume mount never render. Set ",
+      "db_postgresdb_ssl_enabled = true and db_postgresdb_ssl_reject_unauthorized = true to actually verify ",
+      "the certificate, or remove db_postgresdb_ssl_ca_pem.",
+    ])
+  }
+}

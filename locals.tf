@@ -48,6 +48,14 @@ locals {
   n8n_webhook_service_name = "n8n-webhook-processor"
   n8n_service_port         = 5678
 
+  # Fixed name for the module-managed PostgreSQL SSL CA bundle ConfigMap
+  # (n8n.tf's kubernetes_config_map_v1.postgres_ssl_ca), used both on the
+  # resource's own metadata.name and in n8n_extra_volumes below, so the two
+  # never drift and the volume source needs no dependency on the resource
+  # attribute (which would make it unknown at plan time under the mock
+  # provider -- see AGENTS.md's known mock-provider limitations).
+  postgres_ssl_ca_configmap_name = "n8n-postgres-ssl-ca"
+
   # Path prefixes that must reach the webhook processors rather than the mains.
   #
   # The module runs the chart with disableProductionWebhooksOnMainProcess = true,
@@ -258,6 +266,13 @@ locals {
   redis_pod_annotations = (local.redis_auth_active && var.redis_auth_token_secret_ref == null) ? {
     "checksum/redis-auth-token" = sha256(local.redis_auth_token_value)
   } : {}
+
+  # Single seam the Helm values merge (n8n.tf) reads: merges every source of
+  # a forced-rollout annotation (the Redis AUTH token above, the PostgreSQL
+  # SSL CA bundle) into one map, so either, both, or neither can be present
+  # without one clobbering the other when both would otherwise set the same
+  # top-level podAnnotations key.
+  n8n_pod_annotations = merge(local.redis_pod_annotations, local.postgres_ssl_ca_pod_annotations)
 
   # The two arguments the staged HA -> HA+TLS migration needs, lifted here for
   # the same testability reason as the two locals above, though the mechanism
@@ -531,6 +546,14 @@ locals {
         }
       },
     ],
+    (var.db_postgresdb_ssl_enabled && var.db_postgresdb_ssl_ca_pem != null) ? [
+      {
+        name = "postgres-ssl-ca"
+        configMap = {
+          name = local.postgres_ssl_ca_configmap_name
+        }
+      },
+    ] : [],
   )
 
   n8n_extra_volume_mounts = concat(
@@ -551,6 +574,13 @@ locals {
         readOnly  = true
       },
     ],
+    (var.db_postgresdb_ssl_enabled && var.db_postgresdb_ssl_ca_pem != null) ? [
+      {
+        name      = "postgres-ssl-ca"
+        mountPath = "/etc/n8n/postgres-ssl-ca"
+        readOnly  = true
+      },
+    ] : [],
   )
 
   n8n_credentials_overwrite_env = var.n8n_credentials_overwrite_secret_ref == null ? [] : [
@@ -559,6 +589,47 @@ locals {
       value = "/etc/n8n/credentials-overwrite/${var.n8n_credentials_overwrite_secret_ref.key}"
     },
   ]
+
+  # ── PostgreSQL SSL (DB_POSTGRESDB_SSL_ENABLED/_REJECT_UNAUTHORIZED/_CA_FILE) ──
+  # Extracted to its own local, like n8n_credentials_overwrite_env above, so it
+  # can be asserted on directly in tests/defaults.tftest.hcl under command =
+  # plan: helm_release.n8n's values are unknown at plan time (see AGENTS.md's
+  # known mock-provider limitations), so a list built inline inside that
+  # resource's config.extraEnv could not be.
+  #
+  # DB_POSTGRESDB_SSL_CA_FILE is gated on db_postgresdb_ssl_enabled, not only on
+  # db_postgresdb_ssl_ca_pem != null, so toggling SSL off also stops pointing
+  # n8n at a CA file for a connection that no longer exists. It is NOT also
+  # gated on db_postgresdb_ssl_reject_unauthorized: the CA stays mounted and
+  # referenced while verification is off, so flipping reject_unauthorized to
+  # true alone (no other change) needs no Helm values diff beyond that one
+  # setting. check.db_postgresdb_ssl_ca_pem_requires_verification (database.tf)
+  # is what flags that combination as likely a mistake.
+  n8n_postgres_ssl_env = concat(
+    var.db_postgresdb_ssl_enabled ? [
+      { name = "DB_POSTGRESDB_SSL_ENABLED", value = "true" },
+      { name = "DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED", value = tostring(var.db_postgresdb_ssl_reject_unauthorized) },
+      ] : [
+      { name = "DB_POSTGRESDB_SSL_ENABLED", value = "false" },
+    ],
+    (var.db_postgresdb_ssl_enabled && var.db_postgresdb_ssl_ca_pem != null) ? [
+      { name = "DB_POSTGRESDB_SSL_CA_FILE", value = "/etc/n8n/postgres-ssl-ca/ca.pem" },
+    ] : [],
+  )
+
+  # Rolls main, worker and webhook-processor pods when the CA bundle's
+  # content changes. kubernetes_config_map_v1.postgres_ssl_ca (n8n.tf) is
+  # referenced by a constant name (local.postgres_ssl_ca_configmap_name), so
+  # rotating db_postgresdb_ssl_ca_pem updates the ConfigMap's data but
+  # produces no Helm diff, and a mounted ConfigMap's content only refreshes on
+  # the kubelet's periodic sync, not immediately: see the merge site in n8n.tf
+  # for why podAnnotations is the seam that forces an immediate rollout
+  # instead. Same gate as the ConfigMap itself, so this is {} whenever the
+  # ConfigMap does not exist. Hashes the same trimmed value the ConfigMap
+  # stores, so a whitespace-only change does not roll pods for no reason.
+  postgres_ssl_ca_pod_annotations = (var.db_postgresdb_ssl_enabled && var.db_postgresdb_ssl_ca_pem != null) ? {
+    "checksum/postgres-ssl-ca" = sha256(trimspace(var.db_postgresdb_ssl_ca_pem))
+  } : {}
 
   # ── n8n_extra_env collision guard ──────────────────────────────────────────
   # config.extraEnv is appended LAST in every n8n container's env list (see the

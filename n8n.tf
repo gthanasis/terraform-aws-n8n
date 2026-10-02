@@ -296,6 +296,36 @@ resource "kubernetes_secret" "n8n_redis" {
   depends_on = [aws_eks_node_group.n8n]
 }
 
+# ── PostgreSQL SSL CA bundle ──────────────────────────────────────────────────
+# Opt-in: only created when db_postgresdb_ssl_enabled = true and
+# db_postgresdb_ssl_ca_pem is set. Mounted read-only on main, worker and
+# webhook-processor pods (see locals.tf's n8n_extra_volumes /
+# n8n_extra_volume_mounts) and pointed at by DB_POSTGRESDB_SSL_CA_FILE
+# (locals.tf's n8n_postgres_ssl_env). A ConfigMap, not a Secret: a CA
+# certificate is public information (it certifies the server, not the
+# client), so there is nothing to protect read access to.
+
+resource "kubernetes_config_map_v1" "postgres_ssl_ca" {
+  count = var.db_postgresdb_ssl_enabled && var.db_postgresdb_ssl_ca_pem != null ? 1 : 0
+
+  metadata {
+    name      = local.postgres_ssl_ca_configmap_name
+    namespace = local.namespace_name
+  }
+
+  # trimspace: n8n reads DB_POSTGRESDB_SSL_CA_FILE through its _FILE loader,
+  # which trims the file contents and logs a warning on every process start
+  # when it had to. A downloaded PEM bundle always ends in a newline, so
+  # storing it untrimmed would log that warning on every pod start. n8n uses
+  # the trimmed value either way, so nothing else changes.
+  data = {
+    "ca.pem" = trimspace(var.db_postgresdb_ssl_ca_pem)
+  }
+
+  # See the comment on kubernetes_secret.n8n above.
+  depends_on = [aws_eks_node_group.n8n]
+}
+
 # ── Service account ───────────────────────────────────────────────────────────
 # Only created when var.n8n_image_pull_secrets is non-empty. Otherwise the chart
 # creates the account and this resource does not exist; see the note on
@@ -714,15 +744,12 @@ resource "helm_release" "n8n" {
     config = {
       timezone = var.n8n_timezone
       extraEnv = concat(
-        # Direct connections to RDS/Aurora use SSL with the AWS CA (not trusted by Node.js — safe
-        # to skip cert verification within the VPC). Set db_postgresdb_ssl_enabled = false when
-        # n8n's DB host is an in-cluster pooler (e.g. PgBouncer) that handles SSL on its upstream leg.
-        var.db_postgresdb_ssl_enabled ? [
-          { name = "DB_POSTGRESDB_SSL_ENABLED", value = "true" },
-          { name = "DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED", value = "false" },
-          ] : [
-          { name = "DB_POSTGRESDB_SSL_ENABLED", value = "false" },
-        ],
+        # Direct connections to RDS/Aurora use SSL. Certificate verification is off by default
+        # because the RDS CA is not in Node.js's trust store; db_postgresdb_ssl_reject_unauthorized
+        # and db_postgresdb_ssl_ca_pem turn it on (see docs/postgresql-tls.md). Set
+        # db_postgresdb_ssl_enabled = false when n8n's DB host is an in-cluster pooler (e.g.
+        # PgBouncer) that handles SSL on its upstream leg.
+        local.n8n_postgres_ssl_env,
         [
           { name = "N8N_LOG_LEVEL", value = var.n8n_log_level },
           # N8N_LOG_OUTPUT controls *where* logs go (console / file), not their
@@ -1120,46 +1147,64 @@ resource "helm_release" "n8n" {
       )
     },
 
-    # ── Roll the pods when the AUTH token changes ─────────────────────────────
+    # ── Roll the pods when content outside the Helm diff changes ─────────────
     # kubernetes_secret.n8n_redis is referenced by NAME from redis.passwordSecret
     # above, so its contents are not part of the rendered Helm values. Rotating
     # the token therefore updates the Secret and the replication group but
     # produces no Helm diff, and nothing restarts: env vars sourced from a
     # secretKeyRef are resolved once at pod start, so every running pod keeps
-    # the old token indefinitely.
+    # the old token indefinitely. kubernetes_config_map_v1.postgres_ssl_ca has
+    # the same problem for a different reason: it is referenced by a constant
+    # name (local.postgres_ssl_ca_configmap_name), so a changed db_postgresdb_ssl_ca_pem
+    # updates the ConfigMap's data but produces no Helm diff either, and a
+    # mounted ConfigMap's content only refreshes on the kubelet's periodic
+    # sync, not immediately: a rotated RDS CA (docs/postgresql-tls.md) could
+    # reach already-running pods well after it reaches the ConfigMap.
     #
-    # auth_token_update_strategy = "ROTATE" (redis.tf) is what stops that being
-    # an immediate outage: AWS keeps the previous token valid alongside the new
-    # one. It is not a fix, only a grace period. The next rotation invalidates
-    # the token those pods are still holding, and the queue stops.
+    # auth_token_update_strategy = "ROTATE" (redis.tf) is what stops the Redis
+    # half being an immediate outage: AWS keeps the previous token valid
+    # alongside the new one. It is not a fix, only a grace period. The next
+    # rotation invalidates the token those pods are still holding, and the
+    # queue stops. RDS similarly overlaps CA validity windows across a
+    # rotation (see docs/postgresql-tls.md), which is what this annotation's
+    # forced rollout needs to land inside.
     #
     # The chart computes its own checksum/config and checksum/secret pod
     # annotations, but checksum/secret hashes templates/secrets.yaml, which
-    # renders secretRefs.env only. A Secret created outside the chart, as this
-    # one is, can never move that hash. podAnnotations is the seam that works:
-    # the chart merges it into all three pod templates (main, worker, webhook
-    # processor), so a changed value rolls exactly the pods that hold the token.
+    # renders secretRefs.env only, and neither ever hashes a ConfigMap this
+    # module creates outside the chart. podAnnotations is the seam that works
+    # for both cases: the chart merges it into all three pod templates (main,
+    # worker, webhook processor), so a changed value rolls exactly the pods
+    # that hold the token or the CA.
     #
     # CAVEAT: podAnnotations is accepted by the templates but is NOT documented
     # in the chart's values.yaml, so it is an implicit interface that could be
     # renamed without a breaking-change note. Verified present at the pinned
-    # n8n_chart_version (1.10.0) and still present at 1.11.0. If a chart bump
-    # ever silently drops it, rotation goes back to being manual rather than
-    # breaking anything, and the test in defaults.tftest.hcl pins the shape.
+    # n8n_chart_version (1.14.0) and present as far back as 1.10.0. If a chart
+    # bump ever silently drops it, rotation goes back to being manual rather
+    # than breaking anything, and the tests in defaults.tftest.hcl pin the shape.
     #
-    # The hash, never the token: annotations are readable by anyone who can get
-    # a pod, and sha256 is enough to change when the token changes.
+    # The hash, never the secret itself: annotations are readable by anyone who
+    # can get a pod. The CA bundle is already public information (it certifies
+    # the server, not the client), and sha256 is enough either way to change
+    # when the underlying content changes.
     #
     # Merged conditionally rather than emitted as an empty map, for the same
     # reason redis.timeout is: a default deployment must render byte-identical
     # values to what it renders today, or every existing release sees a Helm
-    # diff on upgrade.
+    # diff on upgrade. local.n8n_pod_annotations (locals.tf) merges
+    # redis_pod_annotations and postgres_ssl_ca_pod_annotations into one map,
+    # so either source, both, or neither can be present without one clobbering
+    # the other the way two separate `podAnnotations = ...` entries in this
+    # same merge() call would (merge() keeps only the last map that sets a
+    # given top-level key).
     #
-    # Also gated on redis_auth_token_secret_ref being null: with a
+    # Also gated on redis_auth_token_secret_ref for the Redis half: with a
     # caller-managed Secret the module never reads the token value, so it has
     # nothing to hash, and local.redis_pod_annotations resolves to {} on that
-    # path for the same reason.
-    (local.redis_auth_active && var.redis_auth_token_secret_ref == null) ? { podAnnotations = local.redis_pod_annotations } : {},
+    # path for the same reason. That gate lives inside redis_pod_annotations
+    # itself, not here, so it composes with the CA half unconditionally.
+    length(local.n8n_pod_annotations) > 0 ? { podAnnotations = local.n8n_pod_annotations } : {},
 
     # Pod DNS. Omitted entirely unless n8n_dns_config is set, so this is a no-op
     # by default. See that variable for why it exists (ndots:5 search-path
@@ -1215,6 +1260,21 @@ resource "helm_release" "n8n" {
     aws_elasticache_replication_group.n8n,
     aws_iam_role_policy_attachment.s3,
     aws_eks_pod_identity_association.s3,
+    # The CA bundle is mounted by a constant name (see
+    # local.postgres_ssl_ca_configmap_name), so nothing else orders the
+    # ConfigMap before the pods that mount it. Empty when the CA is unset.
+    #
+    # The same edge orders removal the wrong way round: when the CA is
+    # removed (or SSL turned off), Terraform deletes the ConfigMap before it
+    # updates this release. If that upgrade then fails, atomic = true rolls
+    # back to a release whose pods still mount the deleted ConfigMap, and any
+    # pod that starts afterwards waits in ContainerCreating. Not fixed with
+    # create_before_destroy on the ConfigMap: Terraform propagates that
+    # setting to every resource the ConfigMap depends on (the node group, the
+    # namespace and, through them, the cluster), which would change how those
+    # resources are replaced for every caller. docs/postgresql-tls.md
+    # ("Removing the CA") documents the recovery instead.
+    kubernetes_config_map_v1.postgres_ssl_ca,
     kubernetes_service_account_v1.n8n, # empty list unless the module owns it
   ]
 }
