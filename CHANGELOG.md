@@ -174,6 +174,27 @@ this project adheres to the stability contract in
   Under [Stability & versioning](./README.md#stability--versioning) a
   changed resource address is a minor-version boundary, not a patch.
 
+- **`db_max_allocated_storage`** (number, default `null`) enables RDS
+  Storage Autoscaling on the managed PostgreSQL instance, mapped to
+  `max_allocated_storage` on `aws_db_instance.n8n`. `null` (the default)
+  leaves it unset, so autoscaling stays off and existing deployments see no
+  plan change. When set, AWS grows `allocated_storage` automatically
+  as free space runs low, up to this ceiling. Must be a whole number of GiB
+  at least 10% greater than `db_allocated_storage` (AWS's own floor for the
+  ceiling; anything less fails at apply with "Invalid max storage size")
+  and at most 65536 GiB (RDS PostgreSQL's 64 TiB ceiling). The AWS provider
+  hides the resulting `allocated_storage` drift from the next plan once
+  `max_allocated_storage` is configured, so no `lifecycle.ignore_changes`
+  is required while autoscaling stays on. Setting this input back to `null`
+  ends that suppression: in the same apply, raise `db_allocated_storage` to
+  the live size, or the plan proposes shrinking storage, which AWS rejects.
+  Raising `db_allocated_storage` first, on its own, can fail the 10%
+  validation. The validations are written so they also work on Terraform
+  1.11, which does not short-circuit `||`. Set to `400` in the `medium`
+  example. Triggers a non-blocking check warning when
+  `create_database = false`, alongside the other managed-instance sizing
+  inputs.
+
 - **`n8n_worker_keda_pause` and `n8n_worker_keda_paused_replica_count`**
   (chart `keda.worker.pause` / `pausedReplicaCount`). `pause = true`
   annotates the default worker `ScaledObject` with

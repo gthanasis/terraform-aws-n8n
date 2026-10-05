@@ -109,6 +109,10 @@ module "n8n" {
   # working set in shared_buffers. gp3 gives 3,000 baseline IOPS (vs gp2 burst).
   db_instance_class    = "db.m6g.2xlarge"
   db_allocated_storage = 200
+  # Storage Autoscaling ceiling: storage can double before it stops growing.
+  # Raise db_max_allocated_storage to let it grow further. See the root
+  # module's db_max_allocated_storage description before turning it off.
+  db_max_allocated_storage = 400
 
   # ── Redis ─────────────────────────────────────────────────────────────────────
   # Kept at large for this tier. Measured upgrade trigger: the no-op webhook
