@@ -195,6 +195,25 @@ this project adheres to the stability contract in
   `create_database = false`, alongside the other managed-instance sizing
   inputs.
 
+- **`n8n_task_runner_image_repository`** (default `null`, chart
+  `taskRunners.image.repository`). Overrides the task runner sidecar's image
+  repository (`n8nio/runners` by default), independently of
+  `n8n_image_repository`, so the application and runner images can live in
+  different repositories on the same private mirror. Same bare-repository
+  validation (no scheme, tag, or digest) as `n8n_image_repository`. Setting
+  it with `n8n_task_runners_enabled = false` now warns
+  (`check.task_runner_image_repository_requires_task_runners`), and a
+  repository with no corresponding `n8n_task_runner_image_tag` now warns too
+  (`check.custom_task_runner_repository_needs_an_explicit_tag`), since the
+  tag then falls back to `n8n_image_tag` or the chart's default, either of
+  which may not exist in a private mirror. In that case it replaces
+  `check.custom_image_tag_needs_a_task_runner_tag`, which now only covers the
+  default `n8nio/runners` repository, so the two never fire together.
+  `check.image_pull_secrets_need_a_custom_image` no longer warns on
+  `n8n_image_pull_secrets` when only this repository, not
+  `n8n_image_repository`, is set and task runners are enabled. All eleven
+  examples expose the new input as a passthrough variable, matching
+  `n8n_image_repository`'s existing shape.
 - **`n8n_worker_keda_pause` and `n8n_worker_keda_paused_replica_count`**
   (chart `keda.worker.pause` / `pausedReplicaCount`). `pause = true`
   annotates the default worker `ScaledObject` with
@@ -385,6 +404,17 @@ this project adheres to the stability contract in
 
 ### Fixed
 
+- **`n8n_image_repository` applies Docker's 255-character limit to the
+  repository path, not the whole string.** Docker measures the path after
+  normalizing the reference (`distribution/reference` v0.6.0): the registry
+  host does not count, and a single-component Docker Hub name counts an
+  implicit `library/` prefix. A path of up to 255 characters behind a
+  registry host is now accepted, and a bare name of 248 to 255 characters,
+  which Docker could never pull, is now rejected at plan time. The limit is a
+  validation of its own with its own message, and the reference pattern now
+  lives in `local.image_repository_regex`, shared with
+  `n8n_task_runner_image_repository`. The examples' copies follow the same
+  rule.
 - **`keda_chart_version = null` now resolves to the module default.** The
   root input declares `nullable = false`, matching `modules/controllers`. An
   explicit `null`, for example from a caller's own nullable pass-through
