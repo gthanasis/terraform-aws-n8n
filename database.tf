@@ -1,4 +1,12 @@
+# Generated once at apply time; surfaced to aws_db_instance.n8n below and, on
+# the external-database path, echoed nowhere (kubernetes_secret.n8n_db reads
+# var.db_password instead). Skipped when var.db_password_write_only is true:
+# that path feeds var.db_password_wo straight into aws_db_instance.n8n's
+# write-only password_wo argument instead, so there is no plain-text value for
+# this resource to generate or store.
 resource "random_password" "db_password" {
+  count = var.db_password_write_only ? 0 : 1
+
   length           = 24
   special          = true
   override_special = "!#$%&*()-_=+[]{}<>:?"
@@ -447,7 +455,26 @@ resource "aws_db_instance" "n8n" {
 
   db_name  = "n8n_enterprise"
   username = "n8n"
-  password = random_password.db_password.result
+
+  # UNSAFE to flip db_password_write_only from false to true on an EXISTING
+  # instance today. AWS provider ~> 6.0 (the floor this module pins) carries
+  # an open, unfixed bug in aws_db_instance's Update path: migrating from
+  # `password` to `password_wo`/`password_wo_version` can leave
+  # MasterUserPassword unset on the ModifyDBInstance call, so the live
+  # instance's actual credential silently stops tracking db_password_wo
+  # (hashicorp/terraform-provider-aws#42582; fix proposed in provider PR
+  # #47904, not yet merged as of this module's pinned constraint). The same
+  # apply also destroys random_password.db_password[0] and
+  # kubernetes_secret.n8n_db[0], so there is no way back to the old
+  # Terraform-known password afterward either. See README.md -> "Switching to
+  # the write-only RDS password" for the safe migration recipe: migrate with
+  # db_password_wo set to the instance's current password, then rotate.
+  # Flipping back from true to false is a rotation too: it generates a new
+  # random_password.db_password[0] and sends it as the new master password.
+  # See README.md -> "Switching back to the generated password".
+  password            = var.db_password_write_only ? null : random_password.db_password[0].result
+  password_wo         = var.db_password_write_only ? var.db_password_wo : null
+  password_wo_version = var.db_password_write_only ? var.db_password_wo_version : null
 
   db_subnet_group_name    = aws_db_subnet_group.n8n[0].name
   vpc_security_group_ids  = [aws_security_group.rds[0].id]
@@ -506,10 +533,11 @@ resource "aws_db_instance" "n8n" {
 
   # Restore from an existing snapshot instead of creating an empty database.
   # Null (the default) creates an empty one exactly as before. ForceNew, so this
-  # is for standing a stack up, not for reloading a live one. The generated
-  # password above still lands: the provider issues a ModifyDBInstance right
-  # after the restore, because RestoreDBInstanceFromDBSnapshot takes no password
-  # parameter. Encryption, by contrast, comes from the snapshot and cannot be set
+  # is for standing a stack up, not for reloading a live one. The password
+  # above still lands, whether it is the generated one or db_password_wo: the
+  # provider issues a ModifyDBInstance right after the restore, because
+  # RestoreDBInstanceFromDBSnapshot takes no password parameter, and it sends
+  # password_wo on that call too. Encryption, by contrast, comes from the snapshot and cannot be set
   # while restoring, which is what the db_snapshot_* checks below are about.
   snapshot_identifier = var.db_snapshot_identifier
 
