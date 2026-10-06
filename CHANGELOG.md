@@ -9,6 +9,24 @@ this project adheres to the stability contract in
 
 ### Added
 
+- A plan-time advisory `check.db_postgresdb_pool_size_fits_known_max_connections`
+  (`database.tf`) warns when `db_postgresdb_pool_size` times the modeled main,
+  worker, webhook-processor, and `n8n_worker_pools` replica ceilings would
+  exceed the connections n8n can use on the selected `db_instance_class`:
+  `max_connections` from a curated table, minus the 7 slots PostgreSQL 18.6
+  on RDS reserves for superusers (`superuser_reserved_connections`, 3) and
+  RDS's internal role (`rds.rds_reserved_connections`, 4). The `db.t3.small`
+  entry is measured on a live instance (191; RDS's formula against nominal
+  memory would give 225), and `db.t4g.small`, which has the same nominal
+  memory, reuses that figure without being measured. The other entries evaluate
+  `LEAST({DBInstanceClassMemory/9531392}, 5000)` against nominal memory and
+  are not measured, so the live value can be lower and silence does not
+  prove the ceilings fit; confirm the live connection budget
+  (`SHOW max_connections`, reserved connections, and other clients). The
+  check stays silent for classes outside the table and for
+  `create_database = false`. This is documented in the new
+  [`docs/sandbox.md`](./docs/sandbox.md), alongside a cheaper single-main
+  sandbox profile built from existing inputs.
 - `docs/shared-responsibility.md`: a single table summarizing what the
   module does versus what the caller owns across cluster security add-ons,
   network egress and DNS, secrets and Terraform state custody, backup and
@@ -324,6 +342,41 @@ this project adheres to the stability contract in
   - n8n-io/n8n-hosting#209: chart validation reports every failure in one
     render.
   - See `docs/upgrading-n8n.md#moving-from-chart-1130-to-1140`.
+- **`n8n_webhook_hpa_max_replicas` default drops from `8` to `4`, and
+  `db_postgresdb_pool_size` default drops from `10` to `9`.** The previous
+  defaults asked for more connections than the default database can offer.
+  A live `db.t3.small` running PostgreSQL 18.6 reports `max_connections` of
+  191, of which 184 are usable by n8n once the superuser and RDS-internal
+  reserves are subtracted. Main (6) + worker (10) + webhook (8) = 24 pods ×
+  pool size 10 requested 240 connections. At the new defaults, 20 pods ×
+  pool size 9 request 180, so the new
+  `check.db_postgresdb_pool_size_fits_known_max_connections` (see **Added**
+  above) stays silent at the module defaults. The margin is small (4
+  connections) and assumes every pod fills its pool at once.
+  Upgrade notes:
+  - An explicit `n8n_webhook_hpa_max_replicas` or
+    `db_postgresdb_pool_size` is untouched. To keep the old values, set
+    `n8n_webhook_hpa_max_replicas = 8` and `db_postgresdb_pool_size = 10`
+    explicitly, and raise `db_instance_class` to keep the database sized
+    for them; the check warns otherwise.
+  - **A caller who sets `n8n_webhook_hpa_min_replicas` above 4 without
+    setting `n8n_webhook_hpa_max_replicas` now fails at plan** with
+    "n8n_webhook_hpa_min_replicas must not exceed
+    n8n_webhook_hpa_max_replicas". Set `n8n_webhook_hpa_max_replicas`
+    explicitly to a value at or above the minimum.
+  - If you rely on the default module-managed webhook HPA maximum, applying
+    this upgrade lowers `maxReplicas` to 4, and the HPA controller can then
+    reduce existing replicas above 4. Set an explicit maximum before
+    upgrading to keep that capacity.
+  - If you rely on the default pool size, the next apply changes
+    `DB_POSTGRESDB_POOL_SIZE` from 10 to 9, so every n8n pod (main, worker,
+    webhook processor) restarts once.
+  - `examples/worker-pools` now sets `db_instance_class = "db.t3.medium"`:
+    its three pools add 10 pods, taking its peak to 270 connections, above
+    the `db.t3.small` budget. For an existing deployment of that example,
+    the next apply requests an in-place instance class change. With the
+    default `db_apply_immediately = false`, AWS schedules it for the next
+    maintenance window; the resize interrupts database availability.
 - Default n8n chart `1.12.0` to `1.13.0`. `n8n_image_tag = null` still uses
   the selected chart's default, which moves from `appVersion: 2.39.6` to
   `2.40.5`; pin the running application version first if it is not already

@@ -3658,6 +3658,212 @@ run "clean_external_db_config_is_quiet" {
   }
 }
 
+# -- db_postgresdb_pool_size vs. known max_connections ----------------------
+#
+# db.t3.small (the module's own shipped db_instance_class default) is in the
+# curated table (database.tf) at 191, the max_connections measured on a live
+# db.t3.small running PostgreSQL 18.6. The module subtracts the 7 slots n8n
+# cannot use (db_max_connections_reserved: superuser_reserved_connections 3
+# plus rds.rds_reserved_connections 4), leaving 184. The module's own default
+# main/worker/webhook ceilings (6 + 10 + 4 = 20 pods) x the default
+# db_postgresdb_pool_size of 9 request 180 connections, under that budget,
+# so the module default config plans clean with no expect_failures, exactly
+# like every other advisory check at module defaults (see
+# "autoscaling_defaults_fit_the_default_node_group" above).
+run "db_postgresdb_pool_size_fits_known_max_connections_is_silent_at_module_defaults" {
+  command = plan
+
+  assert {
+    condition     = local.db_max_connections_known == 191 && local.db_max_connections_reserved == 7
+    error_message = "db.t3.small must resolve to 191 known connections with 7 reserved, got known ${local.db_max_connections_known} and reserved ${local.db_max_connections_reserved}."
+  }
+
+  assert {
+    condition     = var.db_postgresdb_pool_size == 9 && local.n8n_pg_peak_connections == 180
+    error_message = "Default ceilings (main 6 + worker 10 + webhook 4 = 20) x the default db_postgresdb_pool_size 9 must be 180, got pool ${var.db_postgresdb_pool_size} and peak ${local.n8n_pg_peak_connections}."
+  }
+
+  # No expect_failures: this must plan clean, exactly like every other
+  # advisory check at module defaults.
+}
+
+# Raising the webhook ceiling back to its old default of 8 (main and worker
+# left alone) pushes the same arithmetic to 216, over db.t3.small's
+# 184-connection budget, and must warn.
+run "connection_budget_warns_when_webhook_ceiling_is_raised_back_to_its_old_default" {
+  command = plan
+
+  variables {
+    n8n_webhook_hpa_max_replicas = 8
+  }
+
+  assert {
+    condition     = local.n8n_pg_peak_connections == 216
+    error_message = "Main 6 + worker 10 + webhook 8 = 24 pods x db_postgresdb_pool_size 9 must be 216, got ${local.n8n_pg_peak_connections}."
+  }
+
+  expect_failures = [check.db_postgresdb_pool_size_fits_known_max_connections]
+}
+
+# The previous pool-size default of 10 at the current ceilings requests 200
+# connections, more than db.t3.small's raw max_connections of 191, so it must
+# warn. This is the configuration the live test proved does not fit.
+run "connection_budget_warns_at_the_previous_pool_size_default" {
+  command = plan
+
+  variables {
+    db_postgresdb_pool_size = 10
+  }
+
+  assert {
+    condition     = local.n8n_pg_peak_connections == 200
+    error_message = "Default 20-pod ceiling x db_postgresdb_pool_size 10 must be 200, got ${local.n8n_pg_peak_connections}."
+  }
+
+  expect_failures = [check.db_postgresdb_pool_size_fits_known_max_connections]
+}
+
+# Peak connections between known-minus-reserved (184) and known (191) must
+# still warn: this is what proves the check subtracts db_max_connections_reserved
+# rather than comparing against the raw known figure. Main and worker stay at
+# their defaults (16 pods) and the pool size at its default (9); a webhook
+# ceiling of 5 lands the total on 189 without also tripping the unrelated
+# node-capacity check.
+run "connection_budget_warns_inside_the_reserved_connections_margin" {
+  command = plan
+
+  variables {
+    n8n_webhook_hpa_max_replicas = 5
+  }
+
+  assert {
+    condition     = local.n8n_pg_peak_connections == 189
+    error_message = "Main 6 + worker 10 + webhook 5 = 21 pods x pool_size 9 must be 189, got ${local.n8n_pg_peak_connections}."
+  }
+
+  # 189 is under db.t3.small's max_connections (191) but over the 184 n8n can
+  # use once the 7 reserved slots are subtracted, so this must warn.
+  expect_failures = [check.db_postgresdb_pool_size_fits_known_max_connections]
+}
+
+# db.t4g.small has the same nominal memory as db.t3.small and reuses its
+# measured 191 rather than the nominal 225. At the previous pool-size default
+# of 10 the default ceilings request 200: silent against 225 - 7 = 218, over
+# 191 - 7 = 184. This run fails with a missing expected failure if the entry
+# goes back to the nominal figure.
+run "connection_budget_db_t4g_small_reuses_the_db_t3_small_measurement" {
+  command = plan
+
+  variables {
+    db_instance_class       = "db.t4g.small"
+    db_postgresdb_pool_size = 10
+  }
+
+  assert {
+    condition     = local.db_max_connections_known == 191 && local.n8n_pg_peak_connections == 200
+    error_message = "db.t4g.small must resolve to 191 known connections (reused from db.t3.small), got ${local.db_max_connections_known}; peak must be 200, got ${local.n8n_pg_peak_connections}."
+  }
+
+  expect_failures = [check.db_postgresdb_pool_size_fits_known_max_connections]
+}
+
+# A production-sized instance class at the same default ceilings has ample
+# headroom and must stay quiet.
+run "connection_budget_is_quiet_with_a_production_sized_instance_class" {
+  command = plan
+
+  variables {
+    db_instance_class = "db.m6g.2xlarge"
+  }
+
+  assert {
+    condition     = local.db_max_connections_known == 3604 && local.n8n_pg_peak_connections == 180
+    error_message = "db.m6g.2xlarge must resolve to 3604 known connections, comfortably above the default 180-connection demand."
+  }
+}
+
+# Starting from that same headroom, raising db_postgresdb_pool_size alone
+# (no autoscaler ceiling changes, so the unrelated node-capacity check stays
+# quiet) must still trip the connection-budget check once the arithmetic
+# outgrows the instance class.
+run "connection_budget_warns_when_pool_size_is_raised" {
+  command = plan
+
+  variables {
+    db_instance_class       = "db.m6g.2xlarge"
+    db_postgresdb_pool_size = 200
+  }
+
+  assert {
+    condition     = local.n8n_pg_peak_connections == 4000
+    error_message = "200 x the default 20-pod ceiling must be 4000, got ${local.n8n_pg_peak_connections}."
+  }
+
+  expect_failures = [check.db_postgresdb_pool_size_fits_known_max_connections]
+}
+
+# n8n_worker_pools ceilings must count toward the same budget. node_max is
+# raised so the unrelated node-capacity check has room, and the chart is
+# attested so the worker-pools chart precondition does not abort the plan.
+# On the default db.t3.small the defaults alone fit (180 of 184), so
+# the warning here can only come from the pools' 7 extra pods: a regression
+# that stopped counting pool maxima would leave the check quiet and fail this
+# run with a missing expected failure.
+run "connection_budget_counts_worker_pools" {
+  command = plan
+
+  variables {
+    node_max = 20
+
+    n8n_worker_pools_chart_verified = true
+    n8n_worker_pools = [
+      { name = "gpu", min_replicas = 1, max_replicas = 4 },
+      { name = "sec-team", min_replicas = 1, max_replicas = 3 },
+    ]
+  }
+
+  assert {
+    condition     = local.n8n_worker_pool_max_replicas_sum == 7 && local.n8n_pg_peak_connections == 243
+    error_message = "Worker pool ceilings (4 + 3 = 7) must add to the default 20-pod ceiling, giving 27 x db_postgresdb_pool_size 9 = 243, got pool sum ${local.n8n_worker_pool_max_replicas_sum} and peak ${local.n8n_pg_peak_connections}."
+  }
+
+  expect_failures = [check.db_postgresdb_pool_size_fits_known_max_connections]
+}
+
+# An instance class outside the curated table must stay silent rather than
+# warn from a guessed limit, no matter how large the arithmetic gets.
+run "connection_budget_unknown_instance_class_is_silent" {
+  command = plan
+
+  variables {
+    db_instance_class       = "db.m6g.16xlarge"
+    db_postgresdb_pool_size = 1000
+  }
+
+  assert {
+    condition     = local.db_max_connections_known == null
+    error_message = "An unrecognized db_instance_class must resolve to a null known-connections lookup rather than a guessed limit."
+  }
+}
+
+# create_database = false means the module manages no RDS instance at all, so
+# the check must stay silent even though the arithmetic itself still computes.
+run "connection_budget_check_is_silent_on_the_external_database_path" {
+  command = plan
+
+  variables {
+    create_database         = false
+    db_host                 = "aurora-cluster.cluster-abc123.us-east-1.rds.amazonaws.com"
+    db_password             = "external-db-password"
+    db_postgresdb_pool_size = 1000
+  }
+
+  assert {
+    condition     = local.n8n_pg_peak_connections == 20000
+    error_message = "The arithmetic still computes on the external path (20 ceiling x 1000), but create_database = false must keep check.db_postgresdb_pool_size_fits_known_max_connections silent."
+  }
+}
+
 run "alb_hostname_is_null_without_a_module_managed_ingress" {
   command = plan
 
@@ -9541,6 +9747,10 @@ run "credentials_overwrite_secret_ref_rejects_a_pool_extra_env_conflict" {
   command = plan
 
   variables {
+    # Larger instance class so the pool's default-sized ceiling does not
+    # incidentally trip the unrelated connection-budget check; this run is
+    # only about the credentials_overwrite_secret_ref conflict.
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_credentials_overwrite_secret_ref = {
       name = "n8n-credentials-overwrite"
@@ -9560,6 +9770,7 @@ run "credentials_overwrite_secret_ref_rejects_a_pool_extra_env_file_conflict" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_credentials_overwrite_secret_ref = {
       name = "n8n-credentials-overwrite"
@@ -9734,23 +9945,23 @@ run "extra_env_accepts_community_packages_auth_token" {
 # numbers are deterministic under mocks with nothing to override. At the default
 # t3.xlarge: 6 nodes × (4,000m − 80m kubelet reserve − 180m of per-node
 # DaemonSets) − 720m of cluster add-ons ≈ 21,720m available to n8n, against
-# 15,400m requested at the default ceilings. The remainder is headroom for a
+# 14,200m requested at the default ceilings. The remainder is headroom for a
 # rollout surge. scaling.tf documents where each constant in that sum comes from.
 
 run "autoscaling_defaults_fit_the_default_node_group" {
   command = plan
 
   assert {
-    condition     = var.n8n_chart_version == "1.14.0" && local.n8n_peak_cpu_request_millis == 15400
-    error_message = "Upstream chart 1.14.0 must count runners only on workers: 15400m at default ceilings."
+    condition     = var.n8n_chart_version == "1.14.0" && local.n8n_peak_cpu_request_millis == 14200
+    error_message = "Upstream chart 1.14.0 must count runners only on workers: 14200m at default ceilings."
   }
 
   # No expect_failures: a warning from the capacity check would fail this run,
   # which is the assertion that matters here. The replica asserts pin the
   # defaults that make it hold.
   assert {
-    condition     = kubernetes_horizontal_pod_autoscaler_v2.n8n_webhook[0].spec[0].max_replicas == 8
-    error_message = "The webhook HPA ceiling must default to 8, which the default node group can schedule alongside the main and worker ceilings"
+    condition     = kubernetes_horizontal_pod_autoscaler_v2.n8n_webhook[0].spec[0].max_replicas == 4
+    error_message = "The webhook HPA ceiling must default to 4, which fits the default node group and stays under the default db.t3.small connection threshold"
   }
 
   assert {
@@ -9766,6 +9977,8 @@ run "autoscaling_defaults_fit_the_default_node_group" {
 
 # The old ceiling of 20 mains remains oversized even without main runners:
 # 20,000m plus worker and webhook ceilings exceeds the node group's budget.
+# It also pushes the connection-budget arithmetic over db.t3.small's modeled
+# budget (9 x (20 + 10 + 4) = 306 > 184), so both checks warn.
 run "pre_fix_main_hpa_maximum_warns" {
   command = plan
 
@@ -9773,13 +9986,18 @@ run "pre_fix_main_hpa_maximum_warns" {
     n8n_main_hpa_max_replicas = 20
   }
 
-  expect_failures = [check.autoscaling_maxima_fit_node_group_capacity]
+  expect_failures = [
+    check.autoscaling_maxima_fit_node_group_capacity,
+    check.db_postgresdb_pool_size_fits_known_max_connections,
+  ]
 }
 
 # Same oversized ceiling as the run above, but with single-main active: the
 # capacity model must read local.n8n_main_hpa_effective_max_replicas (clamped
 # to 1), not var.n8n_main_hpa_max_replicas directly, or this would still warn
-# against a ceiling the HPA can never actually reach (#117).
+# against a ceiling the HPA can never actually reach (#117). The connection
+# budget reads the same effective local, so it stays quiet here too (9 x
+# (1 + 10 + 4) = 135, well under 184).
 run "single_main_clamp_prevents_a_false_capacity_warning" {
   command = plan
 
@@ -9791,6 +10009,8 @@ run "single_main_clamp_prevents_a_false_capacity_warning" {
   # No expect_failures: the whole point is that this must NOT warn.
 }
 
+# Pushes both the CPU model (webhook's own 300m x 50) and the connection
+# budget (9 x (6 + 10 + 50) = 594 > 184) over their limits.
 run "pre_fix_webhook_hpa_maximum_warns" {
   command = plan
 
@@ -9798,11 +10018,15 @@ run "pre_fix_webhook_hpa_maximum_warns" {
     n8n_webhook_hpa_max_replicas = 50
   }
 
-  expect_failures = [check.autoscaling_maxima_fit_node_group_capacity]
+  expect_failures = [
+    check.autoscaling_maxima_fit_node_group_capacity,
+    check.db_postgresdb_pool_size_fits_known_max_connections,
+  ]
 }
 
-# Workers are not on an HPA but compete for the same CPU, so their KEDA ceiling
-# is part of the same budget.
+# Workers are not on an HPA but compete for the same CPU, so their KEDA
+# ceiling is part of the same budget; it is also part of the same connection
+# budget (9 x (6 + 40 + 4) = 450 > 184).
 run "worker_keda_maximum_counts_against_the_same_budget" {
   command = plan
 
@@ -9810,21 +10034,29 @@ run "worker_keda_maximum_counts_against_the_same_budget" {
     n8n_worker_keda_max_replicas = 40
   }
 
-  expect_failures = [check.autoscaling_maxima_fit_node_group_capacity]
+  expect_failures = [
+    check.autoscaling_maxima_fit_node_group_capacity,
+    check.db_postgresdb_pool_size_fits_known_max_connections,
+  ]
 }
 
 # Chart 1.12.0 places runners on workers only. Twelve mains now fit, while
-# thirteen exceed the 21,720m budget only when worker runners are enabled.
+# thirteen exceed the 21,720m budget only when worker runners are enabled
+# (pinned here with the old webhook default of 8 to reproduce that boundary;
+# at the new webhook default of 4 thirteen mains with runners would fit). A
+# larger instance class keeps the connection-budget check quiet too, since
+# these runs are only about the CPU model.
 run "main_maximum_of_twelve_fits_with_task_runners_enabled" {
   command = plan
 
   variables {
     n8n_main_hpa_max_replicas = 12
+    db_instance_class         = "db.m6g.2xlarge"
   }
 
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 21400
-    error_message = "Twelve mains with worker runners must request 21400m."
+    condition     = local.n8n_peak_cpu_request_millis == 20200
+    error_message = "Twelve mains with worker runners must request 20200m."
   }
 }
 
@@ -9832,32 +10064,40 @@ run "main_maximum_of_thirteen_warns_with_task_runners_enabled" {
   command = plan
 
   variables {
-    n8n_main_hpa_max_replicas = 13
+    n8n_main_hpa_max_replicas    = 13
+    n8n_webhook_hpa_max_replicas = 8
   }
 
   assert {
     condition     = local.n8n_peak_cpu_request_millis == 22400
-    error_message = "Thirteen mains with worker runners must request 22400m."
+    error_message = "Thirteen mains with worker runners and the old webhook default of 8 must request 22400m."
   }
 
-  expect_failures = [check.autoscaling_maxima_fit_node_group_capacity]
+  # Also exceeds db.t3.small's connection budget: 9 x (13 + 10 + 8) = 279.
+  expect_failures = [
+    check.autoscaling_maxima_fit_node_group_capacity,
+    check.db_postgresdb_pool_size_fits_known_max_connections,
+  ]
 }
 
+# A larger instance class keeps the connection-budget check quiet, since this
+# run is only about the CPU model.
 run "main_maximum_of_thirteen_fits_without_task_runners" {
   command = plan
 
   variables {
     n8n_main_hpa_max_replicas = 13
     n8n_task_runners_enabled  = false
+    db_instance_class         = "db.m6g.2xlarge"
   }
 
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 20400
+    condition     = local.n8n_peak_cpu_request_millis == 19200
     error_message = "Disabling worker runners must remove 2000m from the total."
   }
 
   assert {
-    condition     = kubernetes_horizontal_pod_autoscaler_v2.n8n_webhook[0].spec[0].max_replicas == 8
+    condition     = kubernetes_horizontal_pod_autoscaler_v2.n8n_webhook[0].spec[0].max_replicas == 4
     error_message = "Disabling task runners must not disturb the webhook ceiling"
   }
 }
@@ -9870,7 +10110,7 @@ run "explicit_1_12_0_keeps_worker_only_accounting" {
   }
 
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 15400
+    condition     = local.n8n_peak_cpu_request_millis == 14200
     error_message = "1.12.0 is independently verified worker-only-runner accounting, not just via the current default."
   }
 }
@@ -9883,7 +10123,7 @@ run "verified_chart_build_metadata_keeps_worker_only_accounting" {
   }
 
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 15400
+    condition     = local.n8n_peak_cpu_request_millis == 14200
     error_message = "Build metadata must not change verified release topology accounting."
   }
 }
@@ -9896,7 +10136,7 @@ run "older_chart_keeps_conservative_runner_accounting" {
   }
 
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 16600
+    condition     = local.n8n_peak_cpu_request_millis == 15400
     error_message = "Older charts must retain the main runner allowance."
   }
 }
@@ -9909,7 +10149,7 @@ run "preview_chart_keeps_conservative_runner_accounting" {
   }
 
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 16600
+    condition     = local.n8n_peak_cpu_request_millis == 15400
     error_message = "An unverified preview must retain the main runner allowance."
   }
 }
@@ -9922,7 +10162,7 @@ run "future_chart_keeps_conservative_runner_accounting" {
   }
 
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 16600
+    condition     = local.n8n_peak_cpu_request_millis == 15400
     error_message = "Future releases need topology verification before removing the main runner allowance."
   }
 }
@@ -9935,13 +10175,15 @@ run "custom_chart_keeps_conservative_runner_accounting" {
   }
 
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 16600
+    condition     = local.n8n_peak_cpu_request_millis == 15400
     error_message = "A custom repository need not share upstream topology at the same version."
   }
 }
 
 # Raising node_max is the other side of the same equation: the maxima that warn
-# above are fine once there is somewhere to put the pods.
+# above are fine once there is somewhere to put the pods. A larger instance
+# class keeps the connection-budget check quiet too, since this run is only
+# about node capacity.
 run "raising_node_max_admits_higher_maxima" {
   command = plan
 
@@ -9949,6 +10191,7 @@ run "raising_node_max_admits_higher_maxima" {
     node_max                     = 14
     n8n_main_hpa_max_replicas    = 20
     n8n_webhook_hpa_max_replicas = 50
+    db_instance_class            = "db.m6g.2xlarge"
   }
 
   assert {
@@ -9959,6 +10202,8 @@ run "raising_node_max_admits_higher_maxima" {
 
 # A bigger instance type buys the same headroom as more nodes. m6i.2xlarge is
 # 8 vCPU off the size ladder, so 6 of them roughly doubles what 6 t3.xlarge give.
+# A larger database instance class keeps the connection-budget check quiet
+# too, since this run is only about node capacity.
 run "a_larger_instance_type_admits_higher_maxima" {
   command = plan
 
@@ -9966,6 +10211,7 @@ run "a_larger_instance_type_admits_higher_maxima" {
     node_instance_type           = "m6i.2xlarge"
     n8n_main_hpa_max_replicas    = 20
     n8n_webhook_hpa_max_replicas = 20
+    db_instance_class            = "db.m6g.2xlarge"
   }
 
   assert {
@@ -9976,7 +10222,8 @@ run "a_larger_instance_type_admits_higher_maxima" {
 
 # ...and the ladder has to be read, not assumed. 4 × m6i.2xlarge is 8 vCPU × 4,
 # which the same maxima do not fit into, so this run proves the size suffix is
-# actually parsed rather than treated as a constant.
+# actually parsed rather than treated as a constant. The same maxima (9 x
+# (20 + 10 + 20) = 450) also exceed db.t3.small's connection budget.
 run "the_instance_size_ladder_is_read_not_assumed" {
   command = plan
 
@@ -9987,12 +10234,18 @@ run "the_instance_size_ladder_is_read_not_assumed" {
     n8n_webhook_hpa_max_replicas = 20
   }
 
-  expect_failures = [check.autoscaling_maxima_fit_node_group_capacity]
+  expect_failures = [
+    check.autoscaling_maxima_fit_node_group_capacity,
+    check.db_postgresdb_pool_size_fits_known_max_connections,
+  ]
 }
 
 # Sizes off the standard ladder ("metal" and its variants) have no derivable vCPU
-# count, so the model goes unreadable and the check stays silent rather than
-# warning off a guess. The ceiling here would warn loudly on any ladder size.
+# count, so the model goes unreadable and the capacity check stays silent
+# rather than warning off a guess. The ceiling here would warn loudly on any
+# ladder size, and separately exceeds db.t3.small's connection budget
+# (9 x (200 + 10 + 4) = 1926), which the capacity model's readability does
+# not gate.
 run "an_off_ladder_instance_size_silences_the_capacity_check" {
   command = plan
 
@@ -10005,6 +10258,8 @@ run "an_off_ladder_instance_size_silences_the_capacity_check" {
     condition     = one(aws_eks_node_group.n8n[0].instance_types) == "m5.metal"
     error_message = "An instance size the model cannot read must still reach the node group"
   }
+
+  expect_failures = [check.db_postgresdb_pool_size_fits_known_max_connections]
 }
 
 # The CPU quantity is a different case from the instance size above, and used
@@ -10027,7 +10282,12 @@ run "unparseable_cpu_request_is_rejected_rather_than_silencing_the_capacity_chec
     n8n_main_hpa_max_replicas = 200
   }
 
-  expect_failures = [var.n8n_main_cpu_request]
+  # 200 mains also exceeds db.t3.small's connection budget
+  # (9 x (200 + 10 + 4) = 1926), independent of the cpu_request grammar.
+  expect_failures = [
+    var.n8n_main_cpu_request,
+    check.db_postgresdb_pool_size_fits_known_max_connections,
+  ]
 }
 
 # ── Autoscaler floors drive the deployments' own replica counts ───────────────
@@ -10061,8 +10321,12 @@ run "raised_floors_reach_the_module_owned_webhook_hpa" {
 
   variables {
     n8n_webhook_hpa_min_replicas = 5
+    n8n_webhook_hpa_max_replicas = 5
     n8n_worker_keda_min_replicas = 5
     n8n_main_hpa_min_replicas    = 3
+    # 9 x (6 + 10 + 5) = 189 exceeds db.t3.small's 184-connection budget;
+    # a larger class keeps this run about the HPA floor only.
+    db_instance_class = "db.m6g.2xlarge"
   }
 
   assert {
@@ -10148,7 +10412,12 @@ run "webhook_floor_above_its_ceiling_fails_validation" {
     n8n_webhook_hpa_max_replicas = 8
   }
 
-  expect_failures = [var.n8n_webhook_hpa_min_replicas]
+  # webhook max 8 also exceeds db.t3.small's connection budget
+  # (9 x (6 + 10 + 8) = 216), independent of the floor/ceiling validation.
+  expect_failures = [
+    var.n8n_webhook_hpa_min_replicas,
+    check.db_postgresdb_pool_size_fits_known_max_connections,
+  ]
 }
 
 run "worker_floor_above_its_ceiling_fails_validation" {
@@ -12611,11 +12880,13 @@ run "worker_pools_map_each_pool_to_its_own_queue" {
 
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
-    # Pools count against the node group budget like any other autoscaler, so
-    # the capacity check warns when their ceilings outgrow it. These runs are
-    # about the mapping, not the sizing, so give them room rather than let an
-    # unrelated advisory fail them.
-    node_max = 20
+    # Pools count against the node group budget like any other autoscaler, and
+    # against the database connection budget like any other replica ceiling,
+    # so the capacity and connection-budget checks warn when their ceilings
+    # outgrow those. These runs are about the mapping, not the sizing, so give
+    # them room rather than let an unrelated advisory fail them.
+    node_max          = 20
+    db_instance_class = "db.m6g.2xlarge"
 
     n8n_worker_pools = [
       { name = "gpu" },
@@ -12648,11 +12919,13 @@ run "worker_pools_inherit_module_wide_worker_sizing" {
 
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
-    # Pools count against the node group budget like any other autoscaler, so
-    # the capacity check warns when their ceilings outgrow it. These runs are
-    # about the mapping, not the sizing, so give them room rather than let an
-    # unrelated advisory fail them.
-    node_max = 20
+    # Pools count against the node group budget like any other autoscaler, and
+    # against the database connection budget like any other replica ceiling,
+    # so the capacity and connection-budget checks warn when their ceilings
+    # outgrow those. These runs are about the mapping, not the sizing, so give
+    # them room rather than let an unrelated advisory fail them.
+    node_max          = 20
+    db_instance_class = "db.m6g.2xlarge"
 
     n8n_worker_pools = [{ name = "gpu" }]
   }
@@ -12674,11 +12947,13 @@ run "worker_pools_per_pool_sizing_overrides_the_module_default" {
 
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
-    # Pools count against the node group budget like any other autoscaler, so
-    # the capacity check warns when their ceilings outgrow it. These runs are
-    # about the mapping, not the sizing, so give them room rather than let an
-    # unrelated advisory fail them.
-    node_max = 20
+    # Pools count against the node group budget like any other autoscaler, and
+    # against the database connection budget like any other replica ceiling,
+    # so the capacity and connection-budget checks warn when their ceilings
+    # outgrow those. These runs are about the mapping, not the sizing, so give
+    # them room rather than let an unrelated advisory fail them.
+    node_max          = 20
+    db_instance_class = "db.m6g.2xlarge"
 
     n8n_worker_pools = [{
       name           = "gpu"
@@ -12710,11 +12985,13 @@ run "worker_pools_carry_their_own_keda_bounds" {
 
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
-    # Pools count against the node group budget like any other autoscaler, so
-    # the capacity check warns when their ceilings outgrow it. These runs are
-    # about the mapping, not the sizing, so give them room rather than let an
-    # unrelated advisory fail them.
-    node_max = 20
+    # Pools count against the node group budget like any other autoscaler, and
+    # against the database connection budget like any other replica ceiling,
+    # so the capacity and connection-budget checks warn when their ceilings
+    # outgrow those. These runs are about the mapping, not the sizing, so give
+    # them room rather than let an unrelated advisory fail them.
+    node_max          = 20
+    db_instance_class = "db.m6g.2xlarge"
 
     n8n_worker_pools = [
       { name = "gpu", min_replicas = 2, max_replicas = 8 },
@@ -12741,11 +13018,13 @@ run "worker_pools_min_replicas_accepts_zero" {
 
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
-    # Pools count against the node group budget like any other autoscaler, so
-    # the capacity check warns when their ceilings outgrow it. These runs are
-    # about the mapping, not the sizing, so give them room rather than let an
-    # unrelated advisory fail them.
-    node_max = 20
+    # Pools count against the node group budget like any other autoscaler, and
+    # against the database connection budget like any other replica ceiling,
+    # so the capacity and connection-budget checks warn when their ceilings
+    # outgrow those. These runs are about the mapping, not the sizing, so give
+    # them room rather than let an unrelated advisory fail them.
+    node_max          = 20
+    db_instance_class = "db.m6g.2xlarge"
 
     n8n_worker_pools = [{ name = "itop", min_replicas = 0, max_replicas = 3 }]
   }
@@ -12761,11 +13040,13 @@ run "worker_pools_extra_env_reaches_only_that_pool" {
 
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
-    # Pools count against the node group budget like any other autoscaler, so
-    # the capacity check warns when their ceilings outgrow it. These runs are
-    # about the mapping, not the sizing, so give them room rather than let an
-    # unrelated advisory fail them.
-    node_max = 20
+    # Pools count against the node group budget like any other autoscaler, and
+    # against the database connection budget like any other replica ceiling,
+    # so the capacity and connection-budget checks warn when their ceilings
+    # outgrow those. These runs are about the mapping, not the sizing, so give
+    # them room rather than let an unrelated advisory fail them.
+    node_max          = 20
+    db_instance_class = "db.m6g.2xlarge"
 
     n8n_worker_pools = [
       { name = "gpu", extra_env = [{ name = "CUDA_VISIBLE_DEVICES", value = "0" }] },
@@ -12790,6 +13071,7 @@ run "worker_pools_reject_an_uppercase_name" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "ITop" }]
   }
@@ -12801,6 +13083,7 @@ run "worker_pools_reject_an_underscore_in_a_name" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "sec_team" }]
   }
@@ -12812,6 +13095,7 @@ run "worker_pools_reject_an_overlong_name" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "p${join("", [for i in range(63) : "a"])}" }]
   }
@@ -12826,6 +13110,7 @@ run "worker_pools_reject_the_name_default" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "default" }]
   }
@@ -12837,6 +13122,7 @@ run "worker_pools_reject_duplicate_names" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu" }, { name = "gpu" }]
   }
@@ -12848,6 +13134,7 @@ run "worker_pools_reject_min_replicas_above_max_replicas" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu", min_replicas = 6, max_replicas = 2 }]
   }
@@ -12859,6 +13146,7 @@ run "worker_pools_reject_a_fractional_replica_bound" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu", min_replicas = 1.5 }]
   }
@@ -12870,6 +13158,7 @@ run "worker_pools_reject_max_replicas_of_zero" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu", min_replicas = 0, max_replicas = 0 }]
   }
@@ -12881,6 +13170,7 @@ run "worker_pools_reject_concurrency_below_one" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu", concurrency = 0 }]
   }
@@ -12894,6 +13184,7 @@ run "worker_pools_reject_extra_env_overriding_the_pool_name" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools = [{
       name      = "gpu"
@@ -13003,6 +13294,7 @@ run "worker_pools_reject_extra_env_overriding_a_module_managed_variable" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools = [{
       name      = "gpu"
@@ -13020,6 +13312,7 @@ run "worker_pools_reject_extra_env_setting_graceful_shutdown_timeout" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools = [{
       name      = "gpu"
@@ -13053,8 +13346,10 @@ run "capacity_model_counts_each_pool_at_its_ceiling" {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
 
     # Room for the pools, so this pins the arithmetic rather than tripping the
-    # advisory the arithmetic feeds.
-    node_max = 20
+    # capacity advisory the arithmetic feeds. A larger instance class keeps
+    # the connection-budget check quiet too, for the same reason.
+    node_max          = 20
+    db_instance_class = "db.m6g.2xlarge"
 
     n8n_worker_pools = [
       # 4 x (1000m explicit + 200m task runner sidecar) = 4800m
@@ -13075,8 +13370,8 @@ run "capacity_model_counts_each_pool_at_its_ceiling" {
   # Pool pods render from the chart's shared worker pod template, so each one
   # carries the task runner sidecar the default worker pods carry.
   assert {
-    condition     = local.n8n_peak_cpu_request_millis == 16600 + 9000
-    error_message = "total peak is ${local.n8n_peak_cpu_request_millis}m, expected the no-pools 16600m plus 9000m of pools"
+    condition     = local.n8n_peak_cpu_request_millis == 15400 + 9000
+    error_message = "total peak is ${local.n8n_peak_cpu_request_millis}m, expected the no-pools 15400m plus 9000m of pools"
   }
 }
 
@@ -13090,6 +13385,7 @@ run "worker_pools_reject_a_cpu_quantity_the_capacity_model_cannot_read" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu", cpu_request = "1Ki" }]
   }
@@ -13101,6 +13397,7 @@ run "worker_pools_reject_a_memory_quantity_the_capacity_model_cannot_read" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu", memory_request = "2GB" }]
   }
@@ -13126,6 +13423,7 @@ run "module_wide_cpu_request_rejects_an_unparseable_quantity_a_pool_would_inheri
   command = plan
 
   variables {
+    db_instance_class      = "db.m6g.2xlarge"
     n8n_chart_version      = "1.11.0-preview.workerpools.1"
     n8n_worker_cpu_request = "not-a-quantity"
     n8n_worker_pools       = [{ name = "gpu" }]
@@ -13148,7 +13446,10 @@ run "worker_pools_carry_the_redis_tls_metadata_on_their_scalers" {
   variables {
     n8n_chart_version                = "1.11.0-preview.workerpools.1"
     redis_transit_encryption_enabled = true
-
+    # Larger instance class so the pools' default-sized ceiling does not
+    # incidentally trip the unrelated connection-budget check; this run is
+    # only about the Redis TLS metadata on each pool's scaler.
+    db_instance_class = "db.m6g.2xlarge"
     n8n_worker_pools = [
       { name = "gpu", min_replicas = 1, max_replicas = 4 },
       { name = "itop", min_replicas = 0, max_replicas = 3 },
@@ -13187,6 +13488,10 @@ run "worker_pools_carry_empty_trigger_metadata_without_tls" {
 
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
+    # Larger instance class so the pool's default-sized ceiling does not
+    # incidentally trip the unrelated connection-budget check; this run is
+    # only about the empty trigger metadata without TLS.
+    db_instance_class = "db.m6g.2xlarge"
     n8n_worker_pools  = [{ name = "gpu", min_replicas = 1, max_replicas = 4 }]
   }
 
@@ -13207,6 +13512,7 @@ run "worker_pools_reject_a_trailing_hyphen_in_a_name" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu-" }]
   }
@@ -13218,6 +13524,7 @@ run "worker_pools_reject_a_name_longer_than_the_chart_allows" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     # 44 characters: legal for the chart's schema (53) and for poolName (63),
     # but n8n-worker-<name> would be 55, one over KEDA's ScaledObject cap, so
@@ -13234,8 +13541,11 @@ run "worker_pools_accept_a_name_at_the_chart_ceiling" {
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     # Exactly 43 characters, both ends alphanumeric: n8n-worker-<name> lands
-    # on KEDA's 54-character cap exactly.
-    n8n_worker_pools = [{ name = "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeee" }]
+    # on KEDA's 54-character cap exactly. Larger instance class so the pool's
+    # default-sized ceiling does not incidentally trip the unrelated
+    # connection-budget check.
+    db_instance_class = "db.m6g.2xlarge"
+    n8n_worker_pools  = [{ name = "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeee" }]
   }
 
   assert {
@@ -13250,6 +13560,7 @@ run "worker_pools_reject_a_blank_extra_env_name" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu", extra_env = [{ name = "  ", value = "x" }] }]
   }
@@ -13265,6 +13576,7 @@ run "worker_pools_reject_a_whitespace_padded_extra_env_name" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools = [{
       name      = "gpu"
@@ -13279,6 +13591,7 @@ run "worker_pools_reject_duplicate_extra_env_names_within_a_pool" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools = [{
       name = "gpu"
@@ -13312,6 +13625,7 @@ run "worker_pools_reject_a_non_identifier_extra_env_name" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu", extra_env = [{ name = "2FA_MODE", value = "x" }] }]
   }
@@ -13324,6 +13638,10 @@ run "worker_pools_accept_a_conventional_extra_env_name" {
 
   variables {
     n8n_chart_version = "1.11.0-preview.workerpools.1"
+    # Larger instance class so the pool's default-sized ceiling does not
+    # incidentally trip the unrelated connection-budget check; this run is
+    # only about the extra_env name grammar.
+    db_instance_class = "db.m6g.2xlarge"
     n8n_worker_pools = [{
       name      = "gpu"
       extra_env = [{ name = "GPU_DEVICE_ORDER", value = "0" }]
@@ -13351,6 +13669,7 @@ run "worker_pools_fail_the_plan_when_the_default_chart_predates_them" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     # No n8n_chart_version: the module default, which is a numbered release
     # (1.13.0 at the time of writing) and so never passes the guard, whatever
     # the number is.
@@ -13364,6 +13683,7 @@ run "worker_pools_fail_the_plan_on_any_numbered_release" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0"
     n8n_worker_pools  = [{ name = "gpu" }]
   }
@@ -13382,6 +13702,7 @@ run "worker_pools_reject_the_old_placeholder_minimum_regardless" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.12.0"
     n8n_worker_pools  = [{ name = "gpu" }]
   }
@@ -13393,6 +13714,7 @@ run "worker_pools_reject_any_numbered_release_no_matter_how_high" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "2.0.0"
     n8n_worker_pools  = [{ name = "gpu" }]
   }
@@ -13404,6 +13726,7 @@ run "worker_pools_reject_build_metadata_without_a_prerelease_segment" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     # SemVer 2 allows a "+buildmetadata" suffix with no hyphen, and
     # n8n_chart_version's own validation accepts it, but Helm ignores build
     # metadata when resolving a chart from an HTTPS repository: this can
@@ -13423,6 +13746,7 @@ run "worker_pools_accept_a_prerelease_chart_without_comparing_it" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_worker_pools  = [{ name = "gpu" }]
   }
@@ -13440,6 +13764,7 @@ run "worker_pools_accept_a_numbered_chart_the_caller_has_verified" {
   command = plan
 
   variables {
+    db_instance_class               = "db.m6g.2xlarge"
     n8n_chart_version               = "1.11.0"
     n8n_worker_pools_chart_verified = true
     n8n_worker_pools                = [{ name = "gpu" }]
@@ -13471,6 +13796,7 @@ run "worker_pools_warn_when_the_pinned_n8n_image_predates_them" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_image_tag     = "2.38.1"
     n8n_worker_pools  = [{ name = "gpu" }]
@@ -13483,6 +13809,7 @@ run "worker_pools_accept_the_first_n8n_release_that_ships_them" {
   command = plan
 
   variables {
+    db_instance_class = "db.m6g.2xlarge"
     n8n_chart_version = "1.11.0-preview.workerpools.1"
     n8n_image_tag     = "2.39.0"
     n8n_worker_pools  = [{ name = "gpu" }]

@@ -961,3 +961,145 @@ check "db_postgresdb_ssl_ca_pem_requires_verification" {
     ])
   }
 }
+
+# ── Diagnostics: PostgreSQL connection budget vs. known instance class limits ──
+# RDS computes PostgreSQL's default max_connections from the selected instance
+# class's memory at launch: LEAST({DBInstanceClassMemory/9531392}, 5000) (AWS
+# docs: "Quotas and constraints for Amazon RDS", max_connections row --
+# https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html).
+# Unlike Azure Flexible Server, this is dynamic rather than fixed at
+# provisioning -- a caller who raises db_instance_class later gets the new
+# class's default max_connections after the next reboot -- but the module
+# still cannot read live RDS parameter state from inside a Terraform plan, so
+# this has to warn from the configured class rather than the running one.
+#
+# This check catches the other direction db_postgresdb_pool_size's
+# description already asks callers to budget by hand: pool_size times the
+# modeled pod ceiling (effective main, worker, webhook-processor, and any
+# n8n_worker_pools) against the known table below, the same arithmetic
+# examples/worker-pools/README.md's "Budget database connections before
+# raising these ceilings" note walks through by hand today. An unrecognized
+# db_instance_class stays silent rather than warn from a guessed limit,
+# following the node_vcpus_derived / n8n_capacity_model_readable pattern in
+# scaling.tf.
+#
+# db.t3.small, the module's default class, holds a MEASURED value: SHOW
+# max_connections returned 191 on a live db.t3.small running PostgreSQL 18.6
+# with the default.postgres18 parameter group (live test of PR #169).
+# db.t4g.small has the same nominal memory (2 GiB) and reuses that 191. It
+# was not measured, and DBInstanceClassMemory may differ between Intel and
+# Graviton classes, but for an advisory check the lower figure errs towards
+# warning early rather than staying silent on a configuration that does not
+# fit, which is the failure the measurement exposed. Every other entry is
+# the formula evaluated against the class's NOMINAL memory
+# (for example 2 GiB / 9531392 = 225), so it is a heuristic, not the live
+# default. AWS documents that DBInstanceClassMemory is smaller than the
+# nominal GiB figure because memory is reserved for the operating system and
+# RDS management processes (same CHAP_Limits page). On db.t3.small the live
+# value was 191 against a nominal 225, about 85%. That ratio is not applied to
+# the other entries: the reserved memory is not proportional to instance
+# size and has not been measured elsewhere, and classes large enough to hit
+# the 5000 cap can still reach it. For the nominal entries, a warning means the ceilings exceed an optimistic
+# threshold, and silence does NOT prove the ceilings fit. Replace an entry
+# with a measured value only when it was measured on the module's default
+# engine and default parameter group.
+#
+# The table assumes no custom parameter group override. The module's own
+# optional parameter group (aws_db_parameter_group.n8n above, gated on
+# db_query_logging_enabled) only ever sets log_statement,
+# log_min_duration_statement and rds.force_ssl -- never max_connections -- so
+# that path never changes this table. A caller who attaches an entirely
+# different custom parameter group with its own max_connections override is
+# outside what a Terraform plan can see and is not modeled here.
+#
+# PostgreSQL and RDS also reserve connection slots that n8n cannot use;
+# db_max_connections_reserved below subtracts them before the check compares
+# against local.n8n_pg_peak_connections.
+locals {
+  db_max_connections_by_instance_class = {
+    # Burstable (T family). Memory doubles per size and is identical between
+    # t3 and t4g at the same size.
+    "db.t4g.micro"  = 112
+    "db.t4g.small"  = 191 # assumed equal to db.t3.small, see above
+    "db.t4g.medium" = 450
+    "db.t4g.large"  = 901
+    "db.t3.micro"   = 112
+    "db.t3.small"   = 191 # measured, see above
+    "db.t3.medium"  = 450
+    "db.t3.large"   = 901
+    # General Purpose (M family). 4 GiB of memory per vCPU.
+    "db.m6g.large"   = 901
+    "db.m6g.xlarge"  = 1802
+    "db.m6g.2xlarge" = 3604
+    "db.m6g.4xlarge" = 5000
+    "db.m7g.large"   = 901
+    "db.m7g.xlarge"  = 1802
+    "db.m7g.2xlarge" = 3604
+    "db.m7g.4xlarge" = 5000
+    # Memory Optimized (R family). 8 GiB of memory per vCPU.
+    "db.r6g.large"   = 1802
+    "db.r6g.xlarge"  = 3604
+    "db.r6g.2xlarge" = 5000
+    "db.r6g.4xlarge" = 5000
+    "db.r7g.large"   = 1802
+    "db.r7g.xlarge"  = 3604
+    "db.r7g.2xlarge" = 5000
+    "db.r7g.4xlarge" = 5000
+  }
+  db_max_connections_known = lookup(local.db_max_connections_by_instance_class, var.db_instance_class, null)
+
+  # Connection slots n8n cannot use, measured on the same live db.t3.small
+  # (PostgreSQL 18.6, default parameter group):
+  #   superuser_reserved_connections = 3  (superusers only; n8n's role is
+  #                                        not a superuser)
+  #   rds.rds_reserved_connections   = 4  (RDS's internal rds_reserved role)
+  #   reserved_connections           = 2  (not subtracted: roles with
+  #                                        pg_use_reserved_connections can use
+  #                                        them, which n8n's master user does
+  #                                        through rds_superuser)
+  # PostgreSQL documents that these reserves are carved out of
+  # max_connections. A caller who points n8n at a role without rds_superuser
+  # loses the 2 reserved_connections slots as well. Older engines differ
+  # (PostgreSQL 15 and older use rds.rds_superuser_reserved_connections,
+  # default 2, instead of reserved_connections), so this is one fixed number
+  # measured on the default engine rather than a per-version model.
+  db_max_connections_reserved = 7
+
+  # sum()'s [0] seed keeps the no-pools default at 0 rather than erroring on
+  # an empty list.
+  #
+  # n8n_webhook_hpa_max_replicas is counted even when n8n_webhook_hpa_enabled
+  # = false. That input exists so a caller can bring their own webhook
+  # autoscaler, whose ceiling the module cannot see, so the module's own
+  # maximum is the conservative stand-in rather than the pinned minimum.
+  n8n_worker_pool_max_replicas_sum = sum(concat([0], [for p in var.n8n_worker_pools : p.max_replicas]))
+
+  n8n_pg_peak_connections = var.db_postgresdb_pool_size * (
+    local.n8n_main_hpa_effective_max_replicas +
+    var.n8n_worker_keda_max_replicas +
+    var.n8n_webhook_hpa_max_replicas +
+    local.n8n_worker_pool_max_replicas_sum
+  )
+}
+
+check "db_postgresdb_pool_size_fits_known_max_connections" {
+  assert {
+    condition = (var.create_database && local.db_max_connections_known != null) ? (
+      local.n8n_pg_peak_connections <= local.db_max_connections_known - local.db_max_connections_reserved
+    ) : true
+    error_message = join("", [
+      "db_postgresdb_pool_size (${var.db_postgresdb_pool_size}) times the modeled pod ceiling (main ",
+      "${local.n8n_main_hpa_effective_max_replicas} + worker ${var.n8n_worker_keda_max_replicas} + webhook ",
+      tostring(var.n8n_webhook_hpa_max_replicas),
+      local.n8n_worker_pool_max_replicas_sum > 0 ? " + worker pools ${local.n8n_worker_pool_max_replicas_sum}" : "",
+      ") requests up to ${local.n8n_pg_peak_connections} connections, more than the ",
+      "${coalesce(local.db_max_connections_known, 0) - local.db_max_connections_reserved} connections n8n can use ",
+      "on db_instance_class = \"${var.db_instance_class}\" (max_connections ${coalesce(local.db_max_connections_known, 0)} ",
+      "from the table in database.tf, minus ${local.db_max_connections_reserved} slots reserved for superusers and ",
+      "RDS's internal role; the table is measured for db.t3.small, reuses that figure for db.t4g.small, and is ",
+      "estimated from nominal memory for other classes, where the live value can be lower). Lower db_postgresdb_pool_size or the autoscaler maxima, ",
+      "or raise db_instance_class, and confirm the live connection budget (SHOW max_connections, reserved ",
+      "connections, and other clients). This diagnostic is advisory and does not fail the plan.",
+    ])
+  }
+}
