@@ -292,6 +292,58 @@ resource "aws_eks_addon" "pod_identity_agent" {
   depends_on = [aws_eks_node_group.n8n]
 }
 
+# ── VPC CNI NetworkPolicy enforcement ──────────────────────────────────────────
+# EKS bootstraps vpc-cni as a self-managed workload at cluster creation, so
+# adopting it into an EKS-managed aws_eks_addon needs resolve_conflicts_on_create
+# = "OVERWRITE" to take it over, the same shape examples/large/main.tf uses for
+# its own WARM_ENI_TARGET/WARM_IP_TARGET tuning. Only one Terraform resource may
+# own a given cluster's vpc-cni addon: do not combine this with a root module
+# (examples/large included) that already manages its own aws_eks_addon for
+# vpc-cni on the same cluster, see var.eks_network_policy_enabled's description.
+#
+# configuration_values.enableNetworkPolicy must be the string "true", not a
+# JSON boolean, the addon's schema rejects a boolean here. AWS documents a
+# minimum of Kubernetes 1.26.7 (platform eks.6) or 1.27.4 (eks.5);
+# var.eks_network_policy_enabled's validation sets the module's floor at
+# kubernetes_version 1.27. It checks the minor version only, not the patch
+# or platform version; new clusters start on the latest platform version.
+# addon_version is left unpinned (see docs/versioning.md), so EKS picks its
+# default vpc-cni build for the cluster's Kubernetes version at creation.
+# https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy-configure.html
+#
+# preserve = true: flipping var.eks_network_policy_enabled back to false
+# destroys this resource, which otherwise calls EKS's DeleteAddon without
+# preserving anything, removing the aws-node DaemonSet from a live cluster and
+# cutting off pod networking for existing nodes and new ones alike. preserve
+# tells DeleteAddon to leave the running vpc-cni DaemonSet and its
+# configuration in place as a self-managed installation instead: only EKS's
+# own management of the addon goes away, not vpc-cni itself. That retained
+# configuration still has enableNetworkPolicy on, so opting out does not
+# disable enforcement; the variable's description links AWS's procedure for
+# that.
+# https://docs.aws.amazon.com/eks/latest/APIReference/API_DeleteAddon.html
+#
+# Skipped when create_eks = false: check.existing_eks_cluster_needs_its_own_network_policy_toggle
+# below warns if var.eks_network_policy_enabled is left true on that path.
+
+resource "aws_eks_addon" "vpc_cni" {
+  count = var.create_eks && var.eks_network_policy_enabled ? 1 : 0
+
+  cluster_name                = aws_eks_cluster.n8n[0].name
+  addon_name                  = "vpc-cni"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+  preserve                    = true
+
+  configuration_values = jsonencode({
+    enableNetworkPolicy = "true"
+  })
+
+  tags = local.common_tags
+
+  depends_on = [aws_eks_node_group.n8n]
+}
+
 # ── Bring your own EKS cluster ────────────────────────────────────────────────
 # create_eks = false skips every resource above and instead reads an existing
 # cluster named by existing_eks_cluster_name. local.eks_cluster_name / _endpoint
@@ -366,6 +418,25 @@ check "existing_eks_cluster_name_requires_create_eks_false" {
       "existing_eks_cluster_name is set while create_eks = true (the default), so it is ignored: the module ",
       "creates its own EKS cluster and deploys n8n onto that, not onto ${coalesce(var.existing_eks_cluster_name, "the cluster you named")}. ",
       "Set create_eks = false to deploy onto the existing cluster instead.",
+    ])
+  }
+}
+
+# The same "X is ignored when Y" shape as existing_eks_cluster_needs_its_own_storage_toggle
+# (storage.tf): unlike create_ebs_csi, aws_eks_addon.vpc_cni above is already
+# gated on create_eks, so this combination creates nothing rather than failing
+# outright, the warning exists purely so a caller who flips this toggle
+# expecting NetworkPolicy enforcement on their existing cluster learns why
+# nothing changed, instead of assuming the apply silently worked.
+check "existing_eks_cluster_needs_its_own_network_policy_toggle" {
+  assert {
+    condition = var.create_eks ? true : !var.eks_network_policy_enabled
+    error_message = join("", [
+      "eks_network_policy_enabled = true while create_eks = false, so it is ignored: the module manages no ",
+      "vpc-cni addon on an existing cluster, only aws_eks_addon.vpc_cni on the create_eks = true path (eks.tf). ",
+      "Enable NetworkPolicy enforcement on ${coalesce(var.existing_eks_cluster_name, "the existing cluster")} by ",
+      "adopting its vpc-cni addon yourself (configuration_values = {enableNetworkPolicy = \"true\"}), or ask its ",
+      "owning team to.",
     ])
   }
 }

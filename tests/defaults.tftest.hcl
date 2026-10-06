@@ -362,6 +362,127 @@ run "create_eks_default_creates_the_cluster" {
   }
 }
 
+run "eks_network_policy_enabled_default_creates_no_vpc_cni_addon" {
+  command = plan
+
+  assert {
+    condition     = length(aws_eks_addon.vpc_cni) == 0
+    error_message = "eks_network_policy_enabled = false (the default) must create no aws_eks_addon.vpc_cni, leaving EKS's own self-managed vpc-cni untouched"
+  }
+}
+
+run "eks_network_policy_enabled_renders_vpc_cni_addon_with_network_policy" {
+  command = plan
+
+  variables {
+    eks_network_policy_enabled = true
+  }
+
+  assert {
+    condition     = length(aws_eks_addon.vpc_cni) == 1
+    error_message = "eks_network_policy_enabled = true must create exactly one aws_eks_addon.vpc_cni"
+  }
+
+  assert {
+    condition     = aws_eks_addon.vpc_cni[0].addon_name == "vpc-cni"
+    error_message = "vpc_cni addon must target the vpc-cni addon"
+  }
+
+  assert {
+    condition     = jsondecode(aws_eks_addon.vpc_cni[0].configuration_values).enableNetworkPolicy == "true"
+    error_message = "configuration_values.enableNetworkPolicy must render the string \"true\" (a JSON boolean is rejected by the addon schema)"
+  }
+
+  assert {
+    condition     = aws_eks_addon.vpc_cni[0].resolve_conflicts_on_create == "OVERWRITE"
+    error_message = "resolve_conflicts_on_create must be OVERWRITE to adopt the self-managed vpc-cni EKS bootstraps at cluster creation"
+  }
+
+  assert {
+    condition     = aws_eks_addon.vpc_cni[0].resolve_conflicts_on_update == "OVERWRITE"
+    error_message = "resolve_conflicts_on_update must be OVERWRITE so the module's configuration_values win over drift on later addon updates"
+  }
+
+  assert {
+    condition     = aws_eks_addon.vpc_cni[0].preserve == true
+    error_message = "preserve must be true: without it, flipping eks_network_policy_enabled back to false destroys this resource via DeleteAddon without preserving the aws-node DaemonSet, cutting off pod networking on a live cluster instead of leaving a self-managed vpc-cni behind"
+  }
+}
+
+run "eks_network_policy_enabled_without_create_eks_warns" {
+  command = plan
+
+  variables {
+    create_eks                                   = false
+    existing_eks_cluster_name                    = "platform-shared-cluster"
+    existing_eks_cluster_prerequisites_confirmed = true
+    eks_network_policy_enabled                   = true
+  }
+
+  # The storage check also fires unconditionally whenever create_eks = false
+  # (see storage.tf), independent of this run's actual subject.
+  expect_failures = [
+    check.existing_eks_cluster_needs_its_own_network_policy_toggle,
+    check.existing_eks_cluster_needs_its_own_storage_toggle,
+  ]
+
+  assert {
+    condition     = length(aws_eks_addon.vpc_cni) == 0
+    error_message = "eks_network_policy_enabled = true while create_eks = false must still create no aws_eks_addon.vpc_cni: the module manages no vpc-cni addon on an existing cluster"
+  }
+}
+
+run "eks_network_policy_enabled_requires_kubernetes_1_27" {
+  command = plan
+
+  variables {
+    eks_network_policy_enabled = true
+    kubernetes_version         = "1.26"
+  }
+
+  expect_failures = [var.eks_network_policy_enabled]
+}
+
+run "eks_network_policy_enabled_accepts_kubernetes_1_27" {
+  command = plan
+
+  variables {
+    eks_network_policy_enabled = true
+    kubernetes_version         = "1.27"
+  }
+
+  assert {
+    condition     = length(aws_eks_addon.vpc_cni) == 1
+    error_message = "kubernetes_version = \"1.27\" is the module's floor and must pass eks_network_policy_enabled's validation"
+  }
+}
+
+run "eks_network_policy_enabled_skips_version_floor_without_create_eks" {
+  command = plan
+
+  variables {
+    create_eks                                   = false
+    existing_eks_cluster_name                    = "platform-shared-cluster"
+    existing_eks_cluster_prerequisites_confirmed = true
+    eks_network_policy_enabled                   = true
+    kubernetes_version                           = "1.24"
+  }
+
+  # Only the warnings fire, not the variable's validation: on this path the
+  # input is ignored and kubernetes_version is informational. The version
+  # check fires because 1.24 differs from the mocked existing cluster.
+  expect_failures = [
+    check.existing_eks_cluster_needs_its_own_network_policy_toggle,
+    check.existing_eks_cluster_needs_its_own_storage_toggle,
+    check.existing_eks_cluster_kubernetes_version_matches,
+  ]
+
+  assert {
+    condition     = length(aws_eks_addon.vpc_cni) == 0
+    error_message = "create_eks = false must create no aws_eks_addon.vpc_cni"
+  }
+}
+
 run "create_eks_false_requires_existing_eks_cluster_name" {
   command = plan
 
