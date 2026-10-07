@@ -367,27 +367,32 @@ condition = var.create_database ? (var.db_host == null && var.db_password == nul
 condition = !var.create_database || (var.db_host == null && var.db_password == null)
 ```
 
-Both forms behave identically on the versions this module now supports, so
-this is a consistency rule rather than a correctness one, and the existing
+This is a correctness rule, not only a consistency one. Short-circuit
+evaluation of `&&` and `||` arrived in Terraform 1.12
+([hashicorp/terraform#36224](https://github.com/hashicorp/terraform/issues/36224),
+listed in the v1.12.0 changelog), and the module's floor is `>= 1.11`. Below
+1.12 both operands are always evaluated, which breaks the `||` form in two
+ways:
+
+- `known_true || unknown` is *unknown*, and a `check` whose condition is
+  unknown at plan fails `terraform test` with "Check block assertion known
+  after apply". The `!guard || body` shape therefore breaks whenever the right
+  side reads an input a caller wired from a resource attribute,
+  `examples/large` being the canary because it wires `db_password` from
+  `random_password.aurora.result`.
+- `var.x == null || <expression on var.x>` still evaluates the right side when
+  `var.x` is null, so attribute access, arithmetic, or a function call on the
+  null default aborts the plan (for example "Invalid function argument ...
+  argument must not be null"). The same applies to `validation` conditions;
+  `|| try(..., false)` and `|| can(...)` stay safe because they cannot error.
+
+Both failures reproduce on 1.11.4 and pass on 1.12.0. CI pins a newer
+`TF_VERSION`, so it does not catch them; a caller on 1.11 does. The existing
 `check` blocks all use the first form. Keep matching them: nest rather than
-chaining `||` inside the body.
-
-It used to be a correctness rule, and the history is worth knowing before
-anyone "simplifies" one of these back. `required_version` was `>= 1.9` and CI
-pinned 1.9.8. Short-circuit evaluation of `&&` and `||` arrived in Terraform
-1.10, so on 1.9 both operands were always evaluated, making
-`known_true || unknown` *unknown*, and a `check` whose condition is unknown at
-plan fails `terraform test` with "Check block assertion known after apply".
-The `!guard || body` shape therefore broke whenever the right side read an
-input a caller wired from a resource attribute, `examples/large` being the
-canary because it wires `db_password` from `random_password.aurora.result`.
-Worse, any local Terraform newer than 1.9 short-circuited and passed, so the
-whole class of bug was invisible locally and only ever failed in CI.
-
-The floor is now `>= 1.11` (every `versions.tf`, and CI's `TF_VERSION`), which
-is above the 1.10 that fixed it, so the hazard is retired. It is written down
-because "this reads more naturally as `!guard || body`" is a reasonable
-instinct that was, for a long stretch of this repo's history, wrong.
+chaining `||` inside the body, and use `x == null ? true : (...)` for null
+guards in `validation` blocks. Raising the floor to `>= 1.12` would retire the
+hazard; until then, "this reads more naturally as `!guard || body`" is a
+reasonable instinct that is wrong here.
 
 #### The floor is `>= 1.11`
 
