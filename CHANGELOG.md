@@ -493,17 +493,22 @@ this project adheres to the stability contract in
 ### Fixed
 
 - **Controller Helm releases install one at a time** (#174). In
-  `modules/controllers`, metrics-server, the AWS Load Balancer Controller,
-  the Cluster Autoscaler, and KEDA used to install in parallel (only KEDA
-  waited for the Load Balancer Controller). On a fresh cluster, a transient
-  API timeout in one release made Terraform cancel the others mid-install,
-  and a cancelled release could be left in Helm's `pending-install` state,
-  which blocks the next apply until it is removed by hand. They now install
-  in that order, and each release depends on every earlier one, so the order
-  holds for any combination of `install_*` toggles. No inputs, defaults, or
-  resource addresses change, and existing releases see no resource changes.
-  The first apply and a full destroy take longer: about the sum of the four
-  install times rather than the longest one. Direct callers of
+  `modules/controllers`, the Cluster Autoscaler, metrics-server, the AWS
+  Load Balancer Controller, and KEDA used to install in parallel (only KEDA
+  waited for the Load Balancer Controller). On a fresh cluster, one release
+  failed on a transient API timeout, the others still installing were
+  cancelled (cause not confirmed), and a cancelled release was left in
+  Helm's `pending-install` state, which blocks the next apply until it is
+  removed by hand. They now install in that order, and each release depends
+  on every earlier one, so the order holds for any combination of
+  `install_*` toggles. When one release fails, Terraform skips the later
+  ones, so none of them is in flight when the run stops. No inputs,
+  defaults, or resource addresses change, and existing releases see no
+  resource changes. The first apply and a full destroy take longer: about
+  the sum of the four install times rather than the longest one. The same
+  order applies to any apply that changes several controller releases at
+  once, such as chart version bumps, and a targeted destroy of one
+  controller release now also selects every release after it. Direct callers of
   `modules/controllers` get the same order.
   [`docs/troubleshooting.md`](./docs/troubleshooting.md) has a new entry for
   finding and removing a stranded `pending-install` release.

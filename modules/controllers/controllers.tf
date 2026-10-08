@@ -1,28 +1,31 @@
 # ── Install ordering ──────────────────────────────────────────────────────────
 # The four controller releases install one at a time, in this order:
 #
-#   metrics_server -> lbc -> cluster_autoscaler -> keda (keda.tf)
+#   cluster_autoscaler -> metrics_server -> lbc -> keda (keda.tf)
 #
 # Each release lists every earlier release in depends_on, not only the one
 # before it. The install_* toggles are independent, and a depends_on on a
-# release whose count is 0 is a no-op, so the order holds for any combination
-# of toggles. A plain chain would break when a middle release is turned off.
+# release whose count is 0 is a no-op. Listing every earlier release makes
+# the order independent of which releases are turned off, without relying on
+# how Terraform passes ordering through a release whose count is 0.
 #
 # Why serialize at all (issue #174): on a fresh cluster, one release failed on
-# a transient API timeout while the others were still installing. Terraform
-# then cancelled the in-flight releases, and one was left in Helm's
-# pending-install state with nothing behind it. Neither atomic nor
-# cleanup_on_fail covers that case, and the next apply fails on the release
-# name. One release at a time means a failure cannot interrupt another
-# install. See docs/troubleshooting.md for the cleanup.
+# a transient API timeout while the others were still installing. The other
+# in-flight releases were then cancelled (cause not confirmed), and one was
+# left in Helm's pending-install state with nothing behind it. Neither atomic
+# nor cleanup_on_fail covers that case, and the next apply fails on the
+# release name. With one release at a time, a failed release makes Terraform
+# skip every later one, so none of them is in flight when the run stops. A
+# stranded release is then only possible if the run is interrupted while a
+# release is mid-install. See docs/troubleshooting.md for the cleanup.
 #
-# Why this order: metrics-server installs before LBC registers its
-# cluster-wide Service mutating webhook (see keda.tf), and everything after
-# LBC installs only once LBC's own install has finished with wait = true.
+# Why this order: Cluster Autoscaler needs none of the others and goes first,
+# so it can add nodes if a later controller's pods do not fit on the node
+# group's starting nodes. Cluster Autoscaler and metrics-server install before
+# LBC registers its cluster-wide Service mutating webhook (see keda.tf), and
+# KEDA installs only once LBC's own install has finished with wait = true.
 # The cost is a longer first apply and destroy (the sum of the install times
-# rather than the longest one). Cluster Autoscaler can only add nodes after
-# metrics-server and LBC are Ready, which assumes those two schedule on the
-# node group's starting nodes.
+# rather than the longest one).
 #
 # The mocked terraform test suites cannot assert this: assert reads values,
 # not dependency edges, and the mock providers do not enforce ordering. Only a
@@ -83,6 +86,7 @@ resource "helm_release" "lbc" {
   depends_on = [
     aws_iam_role_policy_attachment.lbc,
     aws_eks_pod_identity_association.lbc,
+    helm_release.cluster_autoscaler,
     helm_release.metrics_server,
   ]
 }
@@ -126,8 +130,6 @@ resource "helm_release" "cluster_autoscaler" {
   depends_on = [
     aws_iam_role_policy_attachment.cluster_autoscaler,
     aws_eks_pod_identity_association.cluster_autoscaler,
-    helm_release.metrics_server,
-    helm_release.lbc,
   ]
 }
 
@@ -165,5 +167,9 @@ resource "helm_release" "metrics_server" {
       name  = "args[1]"
       value = "--kubelet-preferred-address-types=InternalIP"
     },
+  ]
+
+  depends_on = [
+    helm_release.cluster_autoscaler,
   ]
 }

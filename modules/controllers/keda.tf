@@ -33,7 +33,7 @@
 # the shape.
 #
 # Install ordering: KEDA installs last of the four controllers, after
-# metrics_server, lbc and cluster_autoscaler (see the "Install ordering"
+# cluster_autoscaler, metrics_server and lbc (see the "Install ordering"
 # section in controllers.tf). The lbc edge is the one with a reason specific
 # to KEDA: the AWS Load Balancer Controller registers a cluster-wide
 # MutatingWebhookConfiguration
@@ -77,8 +77,8 @@ resource "helm_release" "keda" {
   cleanup_on_fail  = true
 
   depends_on = [
+    helm_release.cluster_autoscaler,
     helm_release.metrics_server,
     helm_release.lbc,
-    helm_release.cluster_autoscaler,
   ]
 }
