@@ -1123,8 +1123,14 @@ check "db_postgresdb_pool_size_fits_known_max_connections" {
       "on db_instance_class = \"${var.db_instance_class}\" (max_connections ${coalesce(local.db_max_connections_known, 0)} ",
       "from the table in database.tf, minus ${local.db_max_connections_reserved} slots reserved for superusers and ",
       "RDS's internal role; the table is measured for db.t3.small, reuses that figure for db.t4g.small, and is ",
-      "estimated from nominal memory for other classes, where the live value can be lower). Lower db_postgresdb_pool_size, the autoscaler maxima, ",
-      "or n8n_worker_keda_paused_replica_count while paused, or raise db_instance_class, and confirm the live connection budget (SHOW max_connections, reserved ",
+      "estimated from nominal memory for other classes, where the live value can be lower). Lower db_postgresdb_pool_size or the autoscaler maxima",
+      # Only named when the paused count is what the model counts: below the
+      # worker maximum, lowering it further changes nothing.
+      local.n8n_worker_modeled_max_replicas > var.n8n_worker_keda_max_replicas ? join("", [
+        ", or n8n_worker_keda_paused_replica_count (the paused count, ${local.n8n_worker_modeled_max_replicas}, is above ",
+        "n8n_worker_keda_max_replicas, ${var.n8n_worker_keda_max_replicas}, and only counts while it stays above it)",
+      ]) : "",
+      ", or raise db_instance_class, and confirm the live connection budget (SHOW max_connections, reserved ",
       "connections, and other clients). This diagnostic is advisory and does not fail the plan.",
     ])
   }
