@@ -2338,6 +2338,16 @@ variable "db_postgresdb_ssl_ca_pem" {
     error_message = "db_postgresdb_ssl_ca_pem must be null or a PEM-encoded CA bundle (containing -----BEGIN CERTIFICATE----- / -----END CERTIFICATE----- delimiters)."
   }
 
+  # PEM is ASCII (RFC 7468), and the size validation below counts characters
+  # while Linux limits bytes. The framing regex above does not stop non-ASCII
+  # text between the delimiters, so without this a bundle with multibyte
+  # characters could pass the size check and still exceed the environment
+  # string limit.
+  validation {
+    condition     = var.db_postgresdb_ssl_ca_pem == null ? true : can(regex("^[[:ascii:]]*$", var.db_postgresdb_ssl_ca_pem))
+    error_message = "db_postgresdb_ssl_ca_pem must contain only ASCII text. A PEM-encoded CA bundle is ASCII; check that the file was not altered or saved with a non-ASCII encoding."
+  }
+
   # The chart passes database.ssl.ca to every n8n container as the
   # environment variable DB_POSTGRESDB_SSL_CA (chart 1.14.0,
   # templates/_configmap-env.tpl). Linux caps a single environment string,
@@ -2346,8 +2356,8 @@ variable "db_postgresdb_ssl_ca_pem" {
   # with "argument list too long". 131072 minus "DB_POSTGRESDB_SSL_CA=" (21)
   # minus the NUL leaves 131050, the boundary measured in Docker. Larger pages
   # only raise the kernel limit, so this never rejects a value that would
-  # work. length() counts characters, not bytes; PEM is ASCII (RFC 7468), and
-  # the framing validation above already requires PEM, so the two agree.
+  # work. length() counts characters, not bytes; the ASCII validation above
+  # makes the two equal.
   # Measures the trimmed value, which is what reaches the chart
   # (local.postgres_ssl_ca_values). Not gated on db_postgresdb_ssl_enabled:
   # a bundle this large can never work, so it fails now rather than in the

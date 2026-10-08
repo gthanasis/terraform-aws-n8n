@@ -243,12 +243,16 @@ jq -e '.data | keys | map(select(startswith("DB_POSTGRESDB_SSL"))) | length == 0
 jq -e --arg ca "$ca_trimmed" \
   '.data.DB_POSTGRESDB_SSL_CA == $ca and (.data | has("DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED") | not)' \
   "$tmp/postgres-ssl-ca-configmap.json" >/dev/null
+# The env reference must point at the ConfigMap checked above, by name and key,
+# so a chart-side rename or retarget fails here instead of at pod start.
+ca_configmap_name=$(jq -er '.metadata.name' "$tmp/postgres-ssl-ca-configmap.json")
 for template in deployment-main deployment-worker deployment-webhook-processor; do
   jq -e '[.spec.template.spec.containers[] | select(.name != "task-runner") | [.env[] | select(.name == "DB_POSTGRESDB_SSL_CA")] | length] | (length > 0 and all(. == 0))' \
     "$tmp/postgres-ssl-default-$template.json" >/dev/null
   jq -e '[.spec.template.spec.containers[] | select(.name != "task-runner") | [.env[] | select(.name == "DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED") | .value] == ["false"]] | (length > 0 and all)' \
     "$tmp/postgres-ssl-default-$template.json" >/dev/null
-  jq -e '[.spec.template.spec.containers[] | select(.name != "task-runner") | [.env[] | select(.name == "DB_POSTGRESDB_SSL_CA") | .valueFrom.configMapKeyRef.key] == ["DB_POSTGRESDB_SSL_CA"]] | (length > 0 and all)' \
+  jq -e --arg name "$ca_configmap_name" \
+    '[.spec.template.spec.containers[] | select(.name != "task-runner") | [.env[] | select(.name == "DB_POSTGRESDB_SSL_CA") | .valueFrom.configMapKeyRef | {name, key}] == [{"name": $name, "key": "DB_POSTGRESDB_SSL_CA"}]] | (length > 0 and all)' \
     "$tmp/postgres-ssl-ca-$template.json" >/dev/null
   jq -e '[.spec.template.spec.containers[] | select(.name != "task-runner") | [.env[] | select(.name == "DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED") | .value] == ["true"]] | (length > 0 and all)' \
     "$tmp/postgres-ssl-ca-$template.json" >/dev/null

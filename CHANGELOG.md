@@ -131,8 +131,13 @@ this project adheres to the stability contract in
   as an environment variable, and Linux refuses to start a container whose
   single environment string exceeds 128 KiB. That rules out the combined
   `global-bundle.pem` (about 170 KB); concatenate the regional bundles you
-  need instead. Both inputs default to the prior behavior (`false` / `null`),
-  so existing deployments see no plan diff. A non-blocking `check` warns when
+  need instead. The bundle must also be ASCII text. Both inputs default to the
+  prior behavior (`false` / `null`), so deployments that leave both at their
+  defaults see no plan diff. Deployments built from unreleased `main` with
+  `db_postgresdb_ssl_ca_pem` already set switch on upgrade from the earlier
+  module-managed ConfigMap and mount to the chart value; if that one upgrade
+  fails and rolls back, recreate the ConfigMap (see `docs/postgresql-tls.md`,
+  "Upgrading from an unreleased build"). A non-blocking `check` warns when
   a CA is supplied without verification actually turned on, and another when
   verification is requested while `db_postgresdb_ssl_enabled = false`, so the
   input is never silently inert. See

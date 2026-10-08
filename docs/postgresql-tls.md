@@ -170,6 +170,31 @@ connection closed after the rollout completes, which takes down the main,
 worker, and webhook-processor pods alike (there is no fallback to an
 unverified connection once the setting is live).
 
+### Upgrading from an unreleased build
+
+This only applies if you deployed from unreleased `main` between PR #165 and
+issue #178 with `db_postgresdb_ssl_ca_pem` set. That build delivered the CA through
+a module-managed ConfigMap, `n8n-postgres-ssl-ca`, mounted into the pods.
+The upgrade deletes that ConfigMap and moves the CA into the chart value in
+the same apply. If that one Helm upgrade fails, `atomic = true` rolls back to
+the previous release, whose pods still mount the deleted ConfigMap, and any
+pod that starts afterwards waits in `ContainerCreating`.
+
+- Run this upgrade while you can watch the apply finish.
+- If it rolls back, recreate the ConfigMap the previous release mounts, then
+  fix the cause and apply again:
+
+  ```bash
+  kubectl -n <namespace> create configmap n8n-postgres-ssl-ca \
+    --from-file=ca.pem=<your-bundle>.pem
+  ```
+
+  Delete it again after the next successful apply, since the module no longer
+  manages it.
+
+No released module version created that ConfigMap, so upgrades from a
+release are not affected.
+
 ## Removing the CA
 
 Setting `db_postgresdb_ssl_ca_pem` back to `null`, or setting

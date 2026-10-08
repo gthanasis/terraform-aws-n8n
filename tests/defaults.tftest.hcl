@@ -6059,19 +6059,19 @@ run "rds_final_snapshot_identifier_rejects_blank_even_for_external_database" {
 }
 
 # ── Forced-rollout pod annotations ───────────────────────────────────────────
-# Two independent sources feed local.n8n_pod_annotations (locals.tf), which is
-# what n8n.tf actually merges into podAnnotations: the Redis AUTH token
-# reaches pods through a Secret referenced by name, and the PostgreSQL SSL CA
-# bundle reaches pods through a ConfigMap referenced by a constant name.
-# Either way, changing the underlying content produces no Helm diff and
-# nothing restarts on its own. Asserted here, not on helm_release.n8n.values,
-# because values is unknown at plan time (it embeds the Redis endpoint).
+# local.n8n_pod_annotations (locals.tf) is what n8n.tf merges into
+# podAnnotations. Only the Redis AUTH token feeds it: the token reaches pods
+# through a Secret referenced by name, so changing it produces no Helm diff
+# and nothing restarts on its own. The PostgreSQL SSL CA bundle needs no such
+# annotation: it is rendered into the chart's own ConfigMap through
+# database.ssl.ca, so the chart's checksum/config annotation rolls the pods
+# when it changes. Asserted here, not on helm_release.n8n.values, because
+# values is unknown at plan time (it embeds the Redis endpoint).
 #
-# The hash itself is unknown at plan time for the Redis half, since
-# random_password.result is. What these pin is the shape: which paths carry
-# which annotation at all, that it is a checksum key rather than the secret
-# itself, and that the two sources merge into one map instead of one
-# clobbering the other.
+# The hash itself is unknown at plan time, since random_password.result is.
+# What these pin is the shape: which paths carry the annotation at all, that
+# it is a checksum key rather than the secret itself, and that a CA bundle
+# adds nothing to the map.
 
 run "no_pod_annotations_by_default" {
   command = plan
@@ -12655,6 +12655,21 @@ run "rejects_db_postgresdb_ssl_ca_pem_over_the_size_limit" {
   variables {
     db_postgresdb_ssl_reject_unauthorized = true
     db_postgresdb_ssl_ca_pem              = "-----BEGIN CERTIFICATE-----\n${format("%0130997d", 0)}\n-----END CERTIFICATE-----\n"
+  }
+
+  expect_failures = [var.db_postgresdb_ssl_ca_pem]
+}
+
+run "rejects_non_ascii_db_postgresdb_ssl_ca_pem" {
+  command = plan
+
+  # The size validation counts characters, and Linux limits bytes. A PEM is
+  # ASCII, so the two agree only because non-ASCII text is rejected: without
+  # this, a bundle with multibyte characters between the delimiters could pass
+  # the size check and still exceed the environment string limit.
+  variables {
+    db_postgresdb_ssl_reject_unauthorized = true
+    db_postgresdb_ssl_ca_pem              = "-----BEGIN CERTIFICATE-----\nMIIFak\u00e9\n-----END CERTIFICATE-----\n"
   }
 
   expect_failures = [var.db_postgresdb_ssl_ca_pem]
