@@ -313,9 +313,13 @@ this project adheres to the stability contract in
   with an evaluation error instead of passing or failing cleanly. This hit
   `db_max_allocated_storage` while it was in review (#167) and the
   `n8n_dns_config` `ndots` validation (#175); CI ran only Terraform 1.16.4,
-  so neither failed there. CI now also runs every `terraform test` suite
-  (root and all eleven examples) on Terraform `1.12.0` in a new `test-floor`
-  job, and `tests/scripts/check-terraform-floor.sh` (`task terraform-floor`)
+  so neither failed there. CI now also runs the `terraform test` suites
+  (all eleven examples, and every root file except `tests/defaults.tftest.hcl`)
+  on Terraform `1.12.0` in a new `test-floor` job. The root `defaults` file
+  is skipped there because `terraform test` on 1.12.x leaves one provider
+  process running per run block, which exhausts the runner's memory over
+  its 806 runs (fixed in Terraform 1.13.0). The job also runs `terraform
+  validate`, and `tests/scripts/check-terraform-floor.sh` (`task terraform-floor`)
   fails it if `TF_FLOOR_VERSION` and the declared floor disagree (#177).
 
   **Upgrade note.** Under

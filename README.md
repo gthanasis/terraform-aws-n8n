@@ -178,7 +178,7 @@ This module ships against specific provider majors. Notably:
   Upgrade the CLI used locally and in automation, and widen any narrower
   `required_version` in your own configuration (for example `~> 1.11.0`). No
   module inputs or state change. See the upgrade note in [`CHANGELOG.md`](./CHANGELOG.md). CI runs
-  every test suite on both the latest Terraform and `1.12.0`.
+  the test suites on both the latest Terraform and `1.12.0`.
 - **n8n Helm chart:** default `1.14.0`. Other chart versions can be
   selected via `n8n_chart_version`.
 - **n8n application image:** `n8n_image_tag = null` uses the selected chart's default. Chart `1.14.0` resolves to `docker.n8n.io/n8nio/n8n:2.41.4`, not the floating `stable` tag used by `1.11.0`. **Pin the running application version before upgrading the chart to avoid an accidental downgrade.** See [Upgrading n8n](./docs/upgrading-n8n.md). `n8n_image_repository` points the release at a custom image (see [Custom n8n images](#custom-n8n-images)).

@@ -26,8 +26,8 @@ terraform {
   #          plan instead of passing or failing cleanly (#167, #175).
   #
   # Declared as >= 1.12 in all thirteen required_version declarations in the
-  # repo. CI's test-floor job runs every test suite on TF_FLOOR_VERSION
-  # (1.12.0), and tests/scripts/check-terraform-floor.sh keeps the two equal,
+  # repo. CI's test-floor job runs the test suites on TF_FLOOR_VERSION
+  # (1.12.0; see that job for the one root file it skips), and tests/scripts/check-terraform-floor.sh keeps the two equal,
   # so the floor is a claim CI actually exercises rather than one nobody
   # checks.
   required_version = ">= 1.12"

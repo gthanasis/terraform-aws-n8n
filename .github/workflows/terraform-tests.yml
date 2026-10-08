@@ -15,7 +15,7 @@ env:
   # so there is one deliberately tracked latest version to bump rather than a
   # moving target. TF_FLOOR_VERSION below tracks the module's floor instead.
   TF_VERSION: "1.16.4"
-  # The `test-floor` job also runs every `terraform test` suite on the lowest
+  # The `test-floor` job also runs the `terraform test` suites on the lowest
   # release the module's required_version admits. A floor CI never runs is a
   # claim nobody is checking: on the previous `>= 1.11` floor, two validations
   # (#167, #175) broke on 1.11 and passed here, because && and || only
@@ -206,14 +206,17 @@ jobs:
   # check names stay unchanged and each version is defined once (matrix values
   # cannot read `env`).
   #
-  # Two deliberate differences from `test`: no `-verbose`, and no
-  # setup-terraform wrapper. With both, the root suite on 1.12.0 was stopped
-  # with exit code 143 (SIGTERM) twice, at about 427 of 825 runs and about
-  # 99 MB of output, with no failed run (PR #183). 1.12.0 runs that suite
-  # about 4x slower than 1.16.4, the wrapper keeps all output in memory, and
-  # -verbose prints a full plan per run (58 MB locally, against 0.26 MB
-  # without). The exact cause was not confirmed. Failures still print their
-  # diagnostics without -verbose.
+  # One deliberate difference from `test`: at the module root it skips
+  # tests/defaults.tftest.hcl. `terraform test` on Terraform 1.12.x leaves
+  # about one provider plugin process (~70 MB) running per run block, which
+  # is fixed in 1.13.0. Measured locally: 1.12.0 reached 199 provider
+  # processes and 14 GB after ~185 runs (1.12.2 leaks the same way), while
+  # 1.16.4 stays at 5 processes and 1.6 GB for all 806 runs. On a 16 GB
+  # runner the 806-run file is killed with exit code 143 at ~430 runs (PR
+  # #183). This only affects the test harness: init and plan on 1.12.0 are
+  # fine. The other root test files and every example suite still run here,
+  # so validations are still evaluated on the floor by every plan; only the
+  # invalid-input runs in defaults.tftest.hcl are not.
   test-floor:
     name: terraform test on floor (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -238,7 +241,6 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_FLOOR_VERSION }}
-          terraform_wrapper: false
 
       - name: cache terraform providers
         uses: actions/cache@v4
@@ -251,9 +253,25 @@ jobs:
         working-directory: ${{ matrix.target }}
         run: mkdir -p "$TF_PLUGIN_CACHE_DIR" && terraform init -backend=false
 
+      - name: terraform validate
+        working-directory: ${{ matrix.target }}
+        run: terraform validate -no-color
+
       - name: terraform test
         working-directory: ${{ matrix.target }}
-        run: terraform test
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.target }}" == "." ]]; then
+            # Every root test file except defaults.tftest.hcl (see the job
+            # comment), found by glob so a new root file is not skipped.
+            filters=()
+            for f in tests/*.tftest.hcl; do
+              [[ "$f" == tests/defaults.tftest.hcl ]] || filters+=("-filter=$f")
+            done
+            terraform test -verbose "${filters[@]}"
+          else
+            terraform test -verbose
+          fi
 
   chart:
     name: main topology chart rendering

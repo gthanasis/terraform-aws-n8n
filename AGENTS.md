@@ -269,9 +269,13 @@ pin, and probes, the way `tests/defaults.tftest.hcl`'s
   `large`, `cloudflare`, `godaddy`, `split-ingress`, `worker-pools`) that exercises the example end-to-end with
   the same mocking strategy, catching wiring mistakes between the module and a
   realistic caller.
-- CI runs every one of these suites twice: the `test` job on `TF_VERSION`
-  and the `test-floor` job on `TF_FLOOR_VERSION`, the lowest release the
-  declared `required_version` admits (see "The floor is `>= 1.12`" below).
+- CI runs these suites twice: the `test` job on `TF_VERSION` and the
+  `test-floor` job on `TF_FLOOR_VERSION`, the lowest release the declared
+  `required_version` admits (see "The floor is `>= 1.12`" below).
+  `test-floor` skips `tests/defaults.tftest.hcl` at the root: `terraform
+  test` on 1.12.x leaves about one provider process running per run block
+  (fixed in 1.13.0), so its 806 runs exhaust a 16 GB runner. Every other
+  root file and every example suite runs there.
   `tests/scripts/check-terraform-floor.sh` runs in `test-floor` and fails if
   any of the thirteen declarations disagrees with `TF_FLOOR_VERSION`.
 - `tests/scripts/check-main-chart.sh` renders the pinned n8n chart with the
@@ -410,8 +414,8 @@ this repo's history, wrong, and that an untested floor hid twice.
 Declared as `required_version = ">= 1.12"` everywhere: root, `modules/controllers`,
 and all eleven examples, though not all in a `versions.tf` — nine examples have
 one, but `cloudflare` and `godaddy` declare it inline in `providers.tf`
-instead. CI's `test-floor` job runs every `terraform test` suite on
-`TF_FLOOR_VERSION` (`1.12.0`, the lowest release the floor admits), next to
+instead. CI's `test-floor` job runs the `terraform test` suites (all but
+the root `tests/defaults.tftest.hcl`, see above) on `TF_FLOOR_VERSION` (`1.12.0`, the lowest release the floor admits), next to
 the `test` job on `TF_VERSION`, and `tests/scripts/check-terraform-floor.sh`
 (`task terraform-floor`) fails it if the declarations and `TF_FLOOR_VERSION`
 disagree. It moved to `>= 1.12` from `>= 1.11` for short-circuit evaluation of
@@ -598,7 +602,7 @@ markdownlint README.md CONTRIBUTING.md AGENTS.md docs/*.md
 # Repeat under each example. This list mirrors the CI matrix (the `target:`
 # lists in .github/workflows/terraform-tests.yml) and Taskfile.yml's EXAMPLES
 # var, so a green local run means CI will be green too, on the Terraform you
-# ran it with. CI also repeats every `terraform test` on TF_FLOOR_VERSION (the
+# ran it with. CI also repeats `terraform test` on TF_FLOOR_VERSION (the
 # test-floor job); run the tests with that binary too when a change could
 # depend on the Terraform version. Keep all three lists in sync when adding an
 # example: one that no local wrapper visits is one nobody validates before
