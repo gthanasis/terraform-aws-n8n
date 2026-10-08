@@ -157,10 +157,10 @@ this project adheres to the stability contract in
   `db_password_secret_ref` (the module cannot copy a write-only value into
   the Kubernetes Secret it would otherwise manage), makes the `db_password`
   output `null`, and is fully opt-in: the default
-  (`db_password_write_only = false`) behavior is unchanged, and no
-  `versions.tf` floor changes: the required Terraform (`>= 1.11`) and AWS
-  provider (`~> 6.0`) constraints already satisfy write-only arguments
-  (added in AWS provider `5.88.0`). Safe to enable from the first apply of a
+  (`db_password_write_only = false`) behavior is unchanged, and this feature
+  needs no `versions.tf` floor change: Terraform `>= 1.11` and the AWS
+  provider (`~> 6.0`) already satisfy write-only arguments (added in AWS
+  provider `5.88.0`). Safe to enable from the first apply of a
   new deployment. On an existing password-managed instance, follow the
   migration recipe in README.md -> "Switching to the write-only RDS password"
   instead of flipping it directly, because of an open AWS provider bug
@@ -303,6 +303,35 @@ this project adheres to the stability contract in
   `n8n_chart_repository`, whose default the module cannot verify. See #147.
 
 ### Changed
+
+- **Breaking: the minimum Terraform version is now `>= 1.12`** (was
+  `>= 1.11`) in all thirteen `required_version` declarations: the module
+  root, `modules/controllers`, and all eleven examples. Several validations
+  and `check` blocks guard an expression with `||` or `&&`, which only
+  short-circuit from Terraform 1.12 (hashicorp/terraform#36224). On 1.11
+  both sides are evaluated, so a guarded expression could abort the plan
+  with an evaluation error instead of passing or failing cleanly. This hit
+  `db_max_allocated_storage` while it was in review (#167) and the
+  `n8n_dns_config` `ndots` validation (#175); CI ran only Terraform 1.16.4,
+  so neither failed there. CI now also runs every `terraform test` suite
+  (root and all eleven examples) on Terraform `1.12.0` in a new `test-floor`
+  job, and `tests/scripts/check-terraform-floor.sh` (`task terraform-floor`)
+  fails it if `TF_FLOOR_VERSION` and the declared floor disagree (#177).
+
+  **Upgrade note.** Under
+  [Stability & versioning](./README.md#stability--versioning), a raised
+  version floor is a minor-version boundary. No inputs, outputs, resources
+  or state change. Upgrade the Terraform CLI to 1.12 or newer wherever you
+  run this module: locally, in CI, and in any runner or workspace pin
+  (HCP Terraform, Atlantis and similar). Also widen any `required_version`
+  in your own configuration that excludes 1.12, such as `~> 1.11.0`. This
+  includes direct callers of `modules/controllers`. On 1.11, `terraform init`
+  stops with an unsupported Terraform Core version error before planning
+  anything, so nothing is half-applied. To stay on Terraform 1.11, pin this
+  module to `~> 0.5.0`. On Terraform 1.11, 0.5.x still has #175: an
+  `n8n_dns_config` option without a `value` (for example `edns0`) aborts the
+  plan with "argument must not be null". Avoid value-less options there, or
+  upgrade Terraform.
 
 - Default `keda_chart_version` `2.20.2` to `2.21.0` (root module and
   `modules/controllers`). Callers that do not pin `keda_chart_version` move
@@ -451,7 +480,7 @@ this project adheres to the stability contract in
   release; the module supports them from chart `1.13.0` (see **Added**
   above).
 - CI Terraform pin `1.16.2` to `1.16.4` and Checkov `3.3.17` to `3.3.20`.
-  The Terraform requirement remains `>= 1.11`. The new `CKV_AWS_394`
+  The new `CKV_AWS_394`
   findings (from Checkov `3.3.19`) have scoped exceptions on all eleven
   examples' dynamic Availability Zone lookups to preserve their
   region-portable behavior. Zone identities can still change between

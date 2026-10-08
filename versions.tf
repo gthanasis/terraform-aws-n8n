@@ -4,7 +4,7 @@
 # — see examples/small/providers.tf.
 
 terraform {
-  # Two features set this floor, and the higher one wins:
+  # Three features set this floor, and the highest one wins:
   #
   #   1.9:  cross-variable references in validation blocks, e.g.
   #          var.route53_zone_id's validation referencing var.certificate_arn.
@@ -19,13 +19,18 @@ terraform {
   #          different problem (see its own versions.tf) and it did not work
   #          there; that example's floor is inherited from the module's,
   #          not from override_during.
+  #   1.12: short-circuit evaluation of && and || (hashicorp/terraform#36224):
+  #          errors and unknowns on the side the left operand already
+  #          decides are discarded. On 1.11 both sides were evaluated, so a
+  #          `var.x == null || <expression on var.x>` validation aborted the
+  #          plan instead of passing or failing cleanly (#167, #175).
   #
-  # 1.10 is also load-bearing in passing: it added short-circuit evaluation of
-  # && and ||, which this module's `check` blocks used to have to work around
-  # by hand (see AGENTS.md). Declared as >= 1.11 in every versions.tf in the
-  # repo and matched by CI's TF_VERSION pin, so the floor is a claim CI
-  # actually exercises rather than one nobody checks.
-  required_version = ">= 1.11"
+  # Declared as >= 1.12 in all thirteen required_version declarations in the
+  # repo. CI's test-floor job runs every test suite on TF_FLOOR_VERSION
+  # (1.12.0), and tests/scripts/check-terraform-floor.sh keeps the two equal,
+  # so the floor is a claim CI actually exercises rather than one nobody
+  # checks.
+  required_version = ">= 1.12"
 
   required_providers {
     aws = {

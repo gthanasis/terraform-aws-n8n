@@ -4,7 +4,7 @@
 # AWS or Cloudflare.
 #
 # Run: terraform test
-#   (from examples/cloudflare/, requires terraform >= 1.11)
+#   (from examples/cloudflare/, requires terraform >= 1.12)
 
 mock_provider "aws" {
   override_data {

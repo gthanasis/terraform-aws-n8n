@@ -5,7 +5,7 @@ terraform {
   # attribute, which Terraform only gained in 1.11 and silently ignores
   # before it, turning the documented `terraform test` command into a
   # confusing assertion failure rather than a clear version error.
-  required_version = ">= 1.11"
+  required_version = ">= 1.12"
 
   required_providers {
     aws = {
