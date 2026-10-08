@@ -205,6 +205,15 @@ jobs:
   # separate job rather than a matrix dimension on `test`, so the existing
   # check names stay unchanged and each version is defined once (matrix values
   # cannot read `env`).
+  #
+  # Two deliberate differences from `test`: no `-verbose`, and no
+  # setup-terraform wrapper. With both, the root suite on 1.12.0 was stopped
+  # with exit code 143 (SIGTERM) twice, at about 427 of 825 runs and about
+  # 99 MB of output, with no failed run (PR #183). 1.12.0 runs that suite
+  # about 4x slower than 1.16.4, the wrapper keeps all output in memory, and
+  # -verbose prints a full plan per run (58 MB locally, against 0.26 MB
+  # without). The exact cause was not confirmed. Failures still print their
+  # diagnostics without -verbose.
   test-floor:
     name: terraform test on floor (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -229,6 +238,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_FLOOR_VERSION }}
+          terraform_wrapper: false
 
       - name: cache terraform providers
         uses: actions/cache@v4
@@ -243,7 +253,7 @@ jobs:
 
       - name: terraform test
         working-directory: ${{ matrix.target }}
-        run: terraform test -verbose
+        run: terraform test
 
   chart:
     name: main topology chart rendering
