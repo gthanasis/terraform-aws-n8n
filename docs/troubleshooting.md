@@ -57,7 +57,54 @@ The AWS Load Balancer Controller registers a cluster-wide `MutatingWebhookConfig
 
 ### Fix
 
-The module serializes KEDA on `helm_release.lbc` (which has `wait = true`), so LBC pods are guaranteed Ready before KEDA installs. If you hit this on an older revision of the module, simply re-run `terraform apply` — by the time the second apply starts, LBC is up and KEDA installs cleanly.
+The module installs the controllers one at a time, and KEDA installs last, after `helm_release.lbc`. LBC has `wait = true`, so its install has finished and its pods were Ready before KEDA's Services reach the webhook. If you hit this on an older revision of the module, re-run `terraform apply`. By the time the second apply starts, LBC is up and KEDA installs cleanly.
+
+## `terraform apply`: interrupted controller install leaves a Helm release in `pending-install`
+
+### Symptom
+
+On a fresh apply, one controller release fails, often on a transient API timeout from the new EKS control plane:
+
+```text
+Error: installation failed
+  with module.n8n.module.controllers.helm_release.metrics_server[0],
+unable to build kubernetes objects from release manifest: error validating
+"": error validating data: failed to download openapi: unexpected error when
+reading response body. Please retry. Original error: context deadline
+exceeded
+```
+
+On module versions that installed the controllers in parallel, Terraform then reported `Error: Request cancelled` for the other controller releases that were still installing. One of them can be left behind as a Helm release in `pending-install` with no Kubernetes objects behind it. Terraform does not track that release, so the next `terraform apply` is expected to fail on it with `cannot re-use a name that is still in use`. That retry error follows from Helm's source; it has not been observed directly.
+
+### Cause
+
+The install was interrupted before Helm's own failure handling ran. `atomic = true` uninstalls a release whose install fails inside Helm, but it cannot act on an install that never got that far. `cleanup_on_fail` applies to upgrades only. Helm's install then refuses to reuse the name: `replace` only allows it for a release in `uninstalled` or `failed` state, and an upgrade refuses any release in a pending state. So neither `replace` nor `upgrade_install` gets past it (Helm v3.20.2, `pkg/action/install.go` and `pkg/action/upgrade.go`, the SDK that `hashicorp/helm` 3.3.0 vendors).
+
+The module now installs the controllers one at a time (metrics-server, then the AWS Load Balancer Controller, then the Cluster Autoscaler, then KEDA), so a failure in one release no longer interrupts another. The failing release itself is still uninstalled by `atomic`, and a re-run retries it. A release can still be stranded if the apply itself is stopped mid-install, for example by pressing Ctrl+C twice or losing the runner.
+
+### Fix
+
+Find Helm releases in a pending state:
+
+```bash
+kubectl get secret -A -l owner=helm,status=pending-install
+```
+
+The `name` label on each secret is the release name. Before removing anything, confirm it is an interrupted first install and not an operation still in progress:
+
+```bash
+helm history <release> -n <namespace>
+```
+
+Uninstall only when the history shows a single revision in `pending-install` and no apply or `helm` command is running against the cluster. For a release stuck in `pending-upgrade` or `pending-rollback`, do not uninstall it; see [Recovery from a stuck `pending-rollback` release](#recovery-from-a-stuck-pending-rollback-release) instead.
+
+```bash
+helm uninstall <release> -n <namespace> --wait --timeout 5m
+terraform plan    # expect only the missing releases and what depends on them
+terraform apply
+```
+
+If the uninstall fails or leaves resources in `Terminating`, stop and resolve that before applying again.
 
 ## Smoke test reports `HTTP 000` after a recent destroy + re-apply
 

@@ -492,6 +492,21 @@ this project adheres to the stability contract in
 
 ### Fixed
 
+- **Controller Helm releases install one at a time** (#174). In
+  `modules/controllers`, metrics-server, the AWS Load Balancer Controller,
+  the Cluster Autoscaler, and KEDA used to install in parallel (only KEDA
+  waited for the Load Balancer Controller). On a fresh cluster, a transient
+  API timeout in one release made Terraform cancel the others mid-install,
+  and a cancelled release could be left in Helm's `pending-install` state,
+  which blocks the next apply until it is removed by hand. They now install
+  in that order, and each release depends on every earlier one, so the order
+  holds for any combination of `install_*` toggles. No inputs, defaults, or
+  resource addresses change, and existing releases see no resource changes.
+  The first apply and a full destroy take longer: about the sum of the four
+  install times rather than the longest one. Direct callers of
+  `modules/controllers` get the same order.
+  [`docs/troubleshooting.md`](./docs/troubleshooting.md) has a new entry for
+  finding and removing a stranded `pending-install` release.
 - **`n8n_image_repository` applies Docker's 255-character limit to the
   repository path, not the whole string.** Docker measures the path after
   normalizing the reference (`distribution/reference` v0.6.0): the registry

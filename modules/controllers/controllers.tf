@@ -1,3 +1,33 @@
+# ── Install ordering ──────────────────────────────────────────────────────────
+# The four controller releases install one at a time, in this order:
+#
+#   metrics_server -> lbc -> cluster_autoscaler -> keda (keda.tf)
+#
+# Each release lists every earlier release in depends_on, not only the one
+# before it. The install_* toggles are independent, and a depends_on on a
+# release whose count is 0 is a no-op, so the order holds for any combination
+# of toggles. A plain chain would break when a middle release is turned off.
+#
+# Why serialize at all (issue #174): on a fresh cluster, one release failed on
+# a transient API timeout while the others were still installing. Terraform
+# then cancelled the in-flight releases, and one was left in Helm's
+# pending-install state with nothing behind it. Neither atomic nor
+# cleanup_on_fail covers that case, and the next apply fails on the release
+# name. One release at a time means a failure cannot interrupt another
+# install. See docs/troubleshooting.md for the cleanup.
+#
+# Why this order: metrics-server installs before LBC registers its
+# cluster-wide Service mutating webhook (see keda.tf), and everything after
+# LBC installs only once LBC's own install has finished with wait = true.
+# The cost is a longer first apply and destroy (the sum of the install times
+# rather than the longest one). Cluster Autoscaler can only add nodes after
+# metrics-server and LBC are Ready, which assumes those two schedule on the
+# node group's starting nodes.
+#
+# The mocked terraform test suites cannot assert this: assert reads values,
+# not dependency edges, and the mock providers do not enforce ordering. Only a
+# live fresh apply shows the releases installing one at a time.
+
 # ── AWS Load Balancer Controller ──────────────────────────────────────────────
 # The Helm chart creates its own ServiceAccount (aws-load-balancer-controller
 # in kube-system) and EKS Pod Identity binds it to the IAM role via iam.tf.
@@ -53,6 +83,7 @@ resource "helm_release" "lbc" {
   depends_on = [
     aws_iam_role_policy_attachment.lbc,
     aws_eks_pod_identity_association.lbc,
+    helm_release.metrics_server,
   ]
 }
 
@@ -95,6 +126,8 @@ resource "helm_release" "cluster_autoscaler" {
   depends_on = [
     aws_iam_role_policy_attachment.cluster_autoscaler,
     aws_eks_pod_identity_association.cluster_autoscaler,
+    helm_release.metrics_server,
+    helm_release.lbc,
   ]
 }
 
