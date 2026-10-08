@@ -1,6 +1,7 @@
 terraform {
-  # Matches the module's own floor. Worth knowing that this example cannot go
-  # below it even if the module ever did: its test suite
+  # Matches the module's own floor (1.12, for short-circuit evaluation of &&
+  # and ||; see the root versions.tf). Worth knowing that this example cannot
+  # go below 1.11 even if the module ever did: its test suite
   # (tests/defaults.tftest.hcl) uses override_resource's override_during
   # attribute, which Terraform only gained in 1.11 and silently ignores
   # before it, turning the documented `terraform test` command into a

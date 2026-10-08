@@ -157,10 +157,10 @@ this project adheres to the stability contract in
   `db_password_secret_ref` (the module cannot copy a write-only value into
   the Kubernetes Secret it would otherwise manage), makes the `db_password`
   output `null`, and is fully opt-in: the default
-  (`db_password_write_only = false`) behavior is unchanged, and this feature
-  needs no `versions.tf` floor change: Terraform `>= 1.11` and the AWS
-  provider (`~> 6.0`) already satisfy write-only arguments (added in AWS
-  provider `5.88.0`). Safe to enable from the first apply of a
+  (`db_password_write_only = false`) behavior is unchanged. Write-only
+  arguments need Terraform 1.11 or newer and AWS provider `5.88.0` or newer,
+  which the module's own constraints already satisfy, so this feature raises
+  no version floor. Safe to enable from the first apply of a
   new deployment. On an existing password-managed instance, follow the
   migration recipe in README.md -> "Switching to the write-only RDS password"
   instead of flipping it directly, because of an open AWS provider bug

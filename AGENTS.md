@@ -398,7 +398,7 @@ listed in the v1.12.0 changelog), not 1.10 as this file once claimed. Before
   plan instead of passing or failing the validation. This bit on the
   `>= 1.11` floor: #167 (`db_max_allocated_storage`, fixed before merge) and
   #175 (the `n8n_dns_config` `ndots` validation). CI ran only a newer
-  Terraform, so neither failed there; callers on 1.11 hit them.
+  Terraform, so neither failed there; #175 shipped and hit callers on 1.11.
 
 The floor is now `>= 1.12` and CI tests it (see below), so the hazard is
 retired. It is written down because "this reads more naturally as

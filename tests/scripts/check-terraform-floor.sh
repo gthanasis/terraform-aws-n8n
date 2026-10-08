@@ -25,12 +25,16 @@ cd "$REPO_ROOT"
 
 WORKFLOW=".github/workflows/terraform-tests.yml"
 
-floor="$(sed -n 's/^[[:space:]]*TF_FLOOR_VERSION:[[:space:]]*"\([^"]*\)".*/\1/p' "$WORKFLOW" | head -1)"
+# Exactly one definition: a second one (for example a job-level env override)
+# could make test-floor run a version this script never checked.
+floors="$(sed -n 's/^[[:space:]]*TF_FLOOR_VERSION:[[:space:]]*"\([^"]*\)".*/\1/p' "$WORKFLOW")"
+definitions="$(grep -c -E '^[[:space:]]*TF_FLOOR_VERSION:' "$WORKFLOW" || true)"
 
-if [[ -z "$floor" ]]; then
-  echo "$WORKFLOW: could not find a quoted TF_FLOOR_VERSION env value" >&2
+if [[ "$definitions" -ne 1 || -z "$floors" ]]; then
+  echo "$WORKFLOW: expected exactly one quoted TF_FLOOR_VERSION env value, found $definitions definition(s)" >&2
   exit 1
 fi
+floor="$floors"
 
 if [[ ! "$floor" =~ ^([0-9]+)\.([0-9]+)\.0$ ]]; then
   echo "$WORKFLOW: TF_FLOOR_VERSION is \"$floor\"; it must be X.Y.0, the lowest release the declared floor admits" >&2

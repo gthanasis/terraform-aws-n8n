@@ -175,8 +175,9 @@ This module ships against specific provider majors. Notably:
 - **Terraform CLI:** `>= 1.12`, raised from `>= 1.11` because the module's
   validations rely on `&&` and `||` short-circuiting, which Terraform added in
   1.12. On 1.11, `terraform init` stops with an unsupported-version error.
-  Upgrade the CLI used locally and in automation; no configuration or state
-  changes. See the upgrade note in [`CHANGELOG.md`](./CHANGELOG.md). CI runs
+  Upgrade the CLI used locally and in automation, and widen any narrower
+  `required_version` in your own configuration (for example `~> 1.11.0`). No
+  module inputs or state change. See the upgrade note in [`CHANGELOG.md`](./CHANGELOG.md). CI runs
   every test suite on both the latest Terraform and `1.12.0`.
 - **n8n Helm chart:** default `1.14.0`. Other chart versions can be
   selected via `n8n_chart_version`.
