@@ -504,8 +504,10 @@ this project adheres to the stability contract in
   `install_*` toggles. When one release fails, Terraform skips the later
   ones, so none of them is in flight when the run stops. No inputs,
   defaults, or resource addresses change, and existing releases see no
-  resource changes. The first apply and a full destroy take longer: about
-  the sum of the four install times rather than the longest one. The same
+  resource changes. The first apply and a full destroy take longer: a
+  fresh apply takes about the sum of the four install times, and a full
+  destroy about the sum of the four uninstall times, rather than the
+  longest one. The same
   order applies to any apply that changes several controller releases at
   once, such as chart version bumps, and a targeted destroy of one
   controller release now also selects every release after it. Direct callers of

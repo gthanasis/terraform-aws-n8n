@@ -74,7 +74,7 @@ reading response body. Please retry. Original error: context deadline
 exceeded
 ```
 
-On module versions that installed the controllers in parallel, Terraform could then report `Error: Request cancelled` for the other controller releases that were still installing. That error means the helm provider's connection ended, for example because the run was interrupted; the cause in the observed case was not confirmed. One of them can be left behind as a Helm release in `pending-install` with no Kubernetes objects behind it. Terraform does not track that release, so the next `terraform apply` is expected to fail on it with `cannot re-use a name that is still in use`. That retry error follows from Helm's source; it has not been observed directly.
+On module versions that installed the controllers in parallel, Terraform could then report `Error: Request cancelled` for the other controller releases that were still installing. That error indicates a provider operation was cancelled; it does not establish why, and the cause in the observed case was not confirmed. One of them can be left behind as a Helm release in `pending-install` with no Kubernetes objects behind it. Terraform does not track that release, so the next `terraform apply` is expected to fail on it with `cannot re-use a name that is still in use`. That retry error follows from Helm's source; it has not been observed directly.
 
 ### Cause
 
@@ -84,13 +84,14 @@ The module now installs the controllers one at a time (the Cluster Autoscaler, t
 
 ### Fix
 
-Find Helm releases in a pending state:
+Find the module's controller releases in a pending state:
 
 ```bash
-kubectl get secret -A -l owner=helm,status=pending-install
+kubectl get secret -A \
+  -l 'owner=helm,status=pending-install,name in (cluster-autoscaler,metrics-server,aws-load-balancer-controller,keda)'
 ```
 
-The `name` label on each secret is the release name. Before removing anything, confirm it is an interrupted first install and not an operation still in progress:
+Only touch releases this module owns: `cluster-autoscaler`, `metrics-server` and `aws-load-balancer-controller` in `kube-system`, and `keda` in `keda`. On a shared cluster (`create_eks = false`, or a direct call to `modules/controllers`), other teams' Helm releases can be pending for their own reasons. The `name` label on each secret is the release name. Before removing anything, confirm it is an interrupted first install and not an operation still in progress:
 
 ```bash
 helm history <release> -n <namespace>

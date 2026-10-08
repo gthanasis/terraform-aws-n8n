@@ -24,8 +24,9 @@
 # group's starting nodes. Cluster Autoscaler and metrics-server install before
 # LBC registers its cluster-wide Service mutating webhook (see keda.tf), and
 # KEDA installs only once LBC's own install has finished with wait = true.
-# The cost is a longer first apply and destroy (the sum of the install times
-# rather than the longest one).
+# The cost is a longer first apply and destroy: a fresh apply takes about the
+# sum of the install times, and a full destroy about the sum of the uninstall
+# times, rather than the longest one.
 #
 # The mocked terraform test suites cannot assert this: assert reads values,
 # not dependency edges, and the mock providers do not enforce ordering. Only a
