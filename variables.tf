@@ -344,9 +344,9 @@ variable "n8n_encryption_key_secret_ref" {
   }
 
   # Written as a nested ternary rather than `== null ||`, per AGENTS.md's
-  # consistency rule for guard-style conditions: the null guard gates the
-  # `.key` access structurally rather than relying on short-circuit
-  # evaluation.
+  # rule for guard-style conditions: the null guard gates the `.key` access
+  # structurally rather than relying on short-circuit evaluation, which
+  # Terraform 1.11 (the floor) does not do.
   validation {
     condition     = var.n8n_encryption_key_secret_ref == null ? true : coalesce(var.n8n_encryption_key_secret_ref.key, "N8N_ENCRYPTION_KEY") == "N8N_ENCRYPTION_KEY"
     error_message = "n8n_encryption_key_secret_ref.key must be \"N8N_ENCRYPTION_KEY\" or unset. The chart's coreSecretsEnv helper reads this exact key name from secretRefs.existingSecret and takes no override, unlike the other three secret-reference inputs, whose key the chart does honor."
@@ -2515,10 +2515,10 @@ variable "redis_host" {
   # has nowhere to connect: the same succeeds-then-fails-at-runtime shape the
   # check blocks in redis.tf exist to prevent.
   #
-  # Written as nested ternaries rather than `||` and `&&` because Terraform 1.9,
-  # which CI pins, does not short-circuit either operator. trimspace(null) is a
-  # hard error, so the null test has to gate the blank test structurally rather
-  # than by evaluation order. See AGENTS.md.
+  # Written as nested ternaries rather than `||` and `&&` because Terraform
+  # before 1.12 (the module's floor is 1.11) does not short-circuit either
+  # operator. trimspace(null) is a hard error, so the null test has to gate the
+  # blank test structurally rather than by evaluation order. See AGENTS.md.
   validation {
     condition = var.create_elasticache ? true : (
       var.redis_host != null ? trimspace(var.redis_host) != "" : false
@@ -2600,7 +2600,7 @@ variable "redis_username" {
   # Blank is rejected as well as null, for the same reason redis_host rejects it:
   # an empty string satisfies "is set" and then reaches n8n and KEDA as an empty
   # username, which authenticates as nobody. Nested ternaries rather than `&&`,
-  # per AGENTS.md's consistency rule for guard-style conditions: the null test
+  # per AGENTS.md's rule for guard-style conditions: the null test
   # gates the blank test structurally (trimspace(null) is a hard error) rather
   # than relying on short-circuit evaluation.
   validation {
@@ -3549,10 +3549,10 @@ variable "n8n_dns_config" {
 
   default = null
 
-  # All four guard-style conditions below are written as `guard ? body : true`
-  # rather than `guard-inverted || body`, per AGENTS.md's consistency rule: the
-  # null guard gates the attribute access structurally rather than relying on
-  # short-circuit evaluation.
+  # The null guard on every condition below is written as `guard ? body : true`
+  # rather than `guard-inverted || body`, per AGENTS.md's rule for guard-style
+  # conditions: it gates the attribute access structurally rather than relying
+  # on short-circuit evaluation, which Terraform 1.11 (the floor) does not do.
   validation {
     condition = var.n8n_dns_config == null ? true : (
       length(coalesce(var.n8n_dns_config.nameservers, [])) <= 3
