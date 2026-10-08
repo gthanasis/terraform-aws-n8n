@@ -306,20 +306,20 @@ this project adheres to the stability contract in
 
 - **Breaking: the minimum Terraform version is now `>= 1.13`** (was
   `>= 1.11`) in all thirteen `required_version` declarations: the module
-  root, `modules/controllers`, and all eleven examples. Two releases set it.
-  Several validations
-  and `check` blocks guard an expression with `||` or `&&`, which only
+  root, `modules/controllers`, and all eleven examples. Two Terraform
+  releases set it: 1.12 and 1.13. Several validations and `check` blocks guard an expression with `||` or `&&`, which only
   short-circuit from Terraform 1.12 (hashicorp/terraform#36224). On 1.11
   both sides are evaluated, so a guarded expression could abort the plan
   with an evaluation error instead of passing or failing cleanly. This hit
   `db_max_allocated_storage` while it was in review (#167) and the
   `n8n_dns_config` `ndots` validation (#175); CI ran only Terraform 1.16.4,
   so neither failed there. Terraform 1.13 is needed on top of that for the
-  floor to be testable: `terraform test` on 1.12.x leaves about one
-  provider process running per run block, so the 806-run
+  floor to be testable: `terraform test` on 1.12.x and older leaves about
+  one provider process running per run block, so the 806-run
   `tests/defaults.tftest.hcl` exhausts a 16 GB CI runner (measured: 199
   provider processes and 14 GB after ~185 runs on 1.12.0, while 1.13.0 stays
-  at 5). `init` and `plan` themselves work on 1.12. CI now also runs every
+  at 5). The leak is specific to `terraform test`, not to the module code,
+  but the new floor makes `init` reject 1.12 as well. CI now also runs every
   `terraform test` suite on Terraform `1.13.0` in a new `test-floor` job, and
   `tests/scripts/check-terraform-floor.sh` (`task terraform-floor`) fails it
   if `TF_FLOOR_VERSION` and the declared floor disagree (#177).

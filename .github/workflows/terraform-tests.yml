@@ -20,9 +20,9 @@ env:
   # claim nobody is checking: on the previous `>= 1.11` floor, two validations
   # (#167, #175) broke on 1.11 and passed here, because && and || only
   # short-circuit from Terraform 1.12. The floor is 1.13 rather than 1.12
-  # because `terraform test` on 1.12.x leaks about one provider process per
-  # run block, which exhausts a 16 GB runner on the root suite (see
-  # versions.tf). Must be X.Y.0 for a `>= X.Y` floor, and
+  # because `terraform test` on 1.12.x and older leaks about one provider
+  # process per run block, which exhausts a 16 GB runner on the root suite
+  # (see versions.tf). Must be X.Y.0 for a `>= X.Y` floor, and
   # move together with all thirteen required_version declarations;
   # tests/scripts/check-terraform-floor.sh fails the job otherwise.
   TF_FLOOR_VERSION: "1.13.0"

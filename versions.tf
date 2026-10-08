@@ -25,13 +25,15 @@ terraform {
   #          `var.x == null || <expression on var.x>` validation aborted the
   #          plan instead of passing or failing cleanly (#167, #175).
   #   1.13: a `terraform test` that can run this repo's own suites. On 1.12.x
-  #          it leaves about one provider plugin process (~70 MB) running per
-  #          run block; measured locally, 1.12.0 reached 199 provider
-  #          processes and 14 GB after ~185 runs (1.12.2 leaks the same way),
-  #          so the 806-run tests/defaults.tftest.hcl is killed on a 16 GB CI
+  #          and older (also seen on 1.9.8 and 1.11.4) it leaves about one
+  #          provider plugin process (~70 MB) running per run block;
+  #          measured locally, 1.12.0 reached 199 provider processes and
+  #          14 GB after ~185 runs (1.12.2 leaks the same way), so the
+  #          806-run tests/defaults.tftest.hcl is killed on a 16 GB CI
   #          runner. 1.13.0 stays at 5 processes and runs the whole root
-  #          suite in about 80 seconds. init and plan work on 1.12; this
-  #          floor is about keeping the floor testable.
+  #          suite in about 80 seconds. The leak is specific to
+  #          `terraform test`, not to the module code, but this floor now
+  #          makes init reject 1.12 as well.
   #
   # Declared as >= 1.13 in all thirteen required_version declarations in the
   # repo. CI's test-floor job runs every test suite on TF_FLOOR_VERSION

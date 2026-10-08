@@ -421,12 +421,14 @@ It moved to `>= 1.13` from `>= 1.11` in one step, for two reasons:
 - **1.12** added short-circuit evaluation of `&&` and `||` (see above),
   after #167 and #175 broke on 1.11 while CI ran only 1.16.
 - **1.13** fixed `terraform test` leaving about one provider plugin process
-  (~70 MB) running per run block. Measured locally, 1.12.0 reached 199
+  (~70 MB) running per run block, on 1.12.x and older (also seen on 1.9.8
+  and 1.11.4). Measured locally, 1.12.0 reached 199
   provider processes and 14 GB after ~185 runs (1.12.2 leaks the same
   way), so the 806-run `tests/defaults.tftest.hcl` was killed with exit code
   143 at ~430 runs on a 16 GB CI runner. 1.13.0 stays at 5 processes. On
   1.12 the floor could not run this repo's own suite, which is what makes a
-  floor a checked claim. `init` and `plan` themselves work on 1.12.
+  floor a checked claim. The leak is specific to `terraform test`, not to
+  the module code, but the floor now makes `init` reject 1.12 as well.
 
 It had moved to `>= 1.11` from `>= 1.9` because `override_resource`'s
 `override_during` attribute, which
