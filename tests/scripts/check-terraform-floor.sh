@@ -9,8 +9,8 @@
 # unless:
 #
 #   1. TF_FLOOR_VERSION is exactly X.Y.0, the lowest release `>= X.Y` admits.
-#      Comparing major.minor alone would accept testing 1.12.1 against a
-#      `>= 1.12` floor and miss a bug that only 1.12.0 has.
+#      Comparing major.minor alone would accept testing 1.13.1 against a
+#      `>= 1.13` floor and miss a bug that only 1.13.0 has.
 #   2. The module root, every modules/* submodule and every examples/* root
 #      module declares required_version exactly once, as `">= X.Y"`.
 #

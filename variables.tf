@@ -1903,7 +1903,7 @@ variable "db_max_allocated_storage" {
     # only short-circuits `||` from 1.12, and the module allowed 1.11 when
     # this was written, where the right side is still evaluated and arithmetic
     # on the null default aborted the plan for every caller who left this
-    # input unset. The floor is now 1.12; the guard stays for consistency.
+    # input unset. The floor is now 1.13; the guard stays for consistency.
     condition = var.db_max_allocated_storage == null ? true : (
       var.db_max_allocated_storage * 10 >= var.db_allocated_storage * 11 &&
       var.db_max_allocated_storage <= 65536

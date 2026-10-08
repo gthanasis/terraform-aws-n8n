@@ -271,11 +271,7 @@ pin, and probes, the way `tests/defaults.tftest.hcl`'s
   realistic caller.
 - CI runs these suites twice: the `test` job on `TF_VERSION` and the
   `test-floor` job on `TF_FLOOR_VERSION`, the lowest release the declared
-  `required_version` admits (see "The floor is `>= 1.12`" below).
-  `test-floor` skips `tests/defaults.tftest.hcl` at the root: `terraform
-  test` on 1.12.x leaves about one provider process running per run block
-  (fixed in 1.13.0), so its 806 runs exhaust a 16 GB runner. Every other
-  root file and every example suite runs there.
+  `required_version` admits (see "The floor is `>= 1.13`" below).
   `tests/scripts/check-terraform-floor.sh` runs in `test-floor` and fails if
   any of the thirteen declarations disagrees with `TF_FLOOR_VERSION`.
 - `tests/scripts/check-main-chart.sh` renders the pinned n8n chart with the
@@ -404,23 +400,33 @@ listed in the v1.12.0 changelog), not 1.10 as this file once claimed. Before
   #175 (the `n8n_dns_config` `ndots` validation). CI ran only a newer
   Terraform, so neither failed there; #175 shipped and hit callers on 1.11.
 
-The floor is now `>= 1.12` and CI tests it (see below), so the hazard is
+The floor is now `>= 1.13` and CI tests it (see below), so the hazard is
 retired. It is written down because "this reads more naturally as
 `!guard || body`" is a reasonable instinct that was, for a long stretch of
 this repo's history, wrong, and that an untested floor hid twice.
 
-#### The floor is `>= 1.12`
+#### The floor is `>= 1.13`
 
-Declared as `required_version = ">= 1.12"` everywhere: root, `modules/controllers`,
+Declared as `required_version = ">= 1.13"` everywhere: root, `modules/controllers`,
 and all eleven examples, though not all in a `versions.tf` — nine examples have
 one, but `cloudflare` and `godaddy` declare it inline in `providers.tf`
-instead. CI's `test-floor` job runs the `terraform test` suites (all but
-the root `tests/defaults.tftest.hcl`, see above) on `TF_FLOOR_VERSION` (`1.12.0`, the lowest release the floor admits), next to
+instead. CI's `test-floor` job runs every `terraform test` suite on
+`TF_FLOOR_VERSION` (`1.13.0`, the lowest release the floor admits), next to
 the `test` job on `TF_VERSION`, and `tests/scripts/check-terraform-floor.sh`
 (`task terraform-floor`) fails it if the declarations and `TF_FLOOR_VERSION`
-disagree. It moved to `>= 1.12` from `>= 1.11` for short-circuit evaluation of
-`&&` and `||` (see above), after #167 and #175 broke on 1.11 while CI ran
-only 1.16.
+disagree.
+
+It moved to `>= 1.13` from `>= 1.11` in one step, for two reasons:
+
+- **1.12** added short-circuit evaluation of `&&` and `||` (see above),
+  after #167 and #175 broke on 1.11 while CI ran only 1.16.
+- **1.13** fixed `terraform test` leaving about one provider plugin process
+  (~70 MB) running per run block. Measured locally, 1.12.0 reached 199
+  provider processes and 14 GB after ~185 runs (1.12.2 leaks the same
+  way), so the 806-run `tests/defaults.tftest.hcl` was killed with exit code
+  143 at ~430 runs on a 16 GB CI runner. 1.13.0 stays at 5 processes. On
+  1.12 the floor could not run this repo's own suite, which is what makes a
+  floor a checked claim. `init` and `plan` themselves work on 1.12.
 
 It had moved to `>= 1.11` from `>= 1.9` because `override_resource`'s
 `override_during` attribute, which

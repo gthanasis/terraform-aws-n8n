@@ -304,35 +304,37 @@ this project adheres to the stability contract in
 
 ### Changed
 
-- **Breaking: the minimum Terraform version is now `>= 1.12`** (was
+- **Breaking: the minimum Terraform version is now `>= 1.13`** (was
   `>= 1.11`) in all thirteen `required_version` declarations: the module
-  root, `modules/controllers`, and all eleven examples. Several validations
+  root, `modules/controllers`, and all eleven examples. Two releases set it.
+  Several validations
   and `check` blocks guard an expression with `||` or `&&`, which only
   short-circuit from Terraform 1.12 (hashicorp/terraform#36224). On 1.11
   both sides are evaluated, so a guarded expression could abort the plan
   with an evaluation error instead of passing or failing cleanly. This hit
   `db_max_allocated_storage` while it was in review (#167) and the
   `n8n_dns_config` `ndots` validation (#175); CI ran only Terraform 1.16.4,
-  so neither failed there. CI now also runs the `terraform test` suites
-  (all eleven examples, and every root file except `tests/defaults.tftest.hcl`)
-  on Terraform `1.12.0` in a new `test-floor` job. The root `defaults` file
-  is skipped there because `terraform test` on 1.12.x leaves one provider
-  process running per run block, which exhausts the runner's memory over
-  its 806 runs (fixed in Terraform 1.13.0). The job also runs `terraform
-  validate`, and `tests/scripts/check-terraform-floor.sh` (`task terraform-floor`)
-  fails it if `TF_FLOOR_VERSION` and the declared floor disagree (#177).
+  so neither failed there. Terraform 1.13 is needed on top of that for the
+  floor to be testable: `terraform test` on 1.12.x leaves about one
+  provider process running per run block, so the 806-run
+  `tests/defaults.tftest.hcl` exhausts a 16 GB CI runner (measured: 199
+  provider processes and 14 GB after ~185 runs on 1.12.0, while 1.13.0 stays
+  at 5). `init` and `plan` themselves work on 1.12. CI now also runs every
+  `terraform test` suite on Terraform `1.13.0` in a new `test-floor` job, and
+  `tests/scripts/check-terraform-floor.sh` (`task terraform-floor`) fails it
+  if `TF_FLOOR_VERSION` and the declared floor disagree (#177).
 
   **Upgrade note.** Under
   [Stability & versioning](./README.md#stability--versioning), a raised
   version floor is a minor-version boundary. No inputs, outputs, resources
-  or state change. Upgrade the Terraform CLI to 1.12 or newer wherever you
+  or state change. Upgrade the Terraform CLI to 1.13 or newer wherever you
   run this module: locally, in CI, and in any runner or workspace pin
   (HCP Terraform, Atlantis and similar). Also widen any `required_version`
-  in your own configuration that excludes 1.12, such as `~> 1.11.0`. This
-  includes direct callers of `modules/controllers`. On 1.11, `terraform init`
+  in your own configuration that excludes 1.13, such as `~> 1.12.0`. This
+  includes direct callers of `modules/controllers`. On 1.12 or older, `terraform init`
   stops with an unsupported Terraform Core version error before planning
-  anything, so nothing is half-applied. To stay on Terraform 1.11, pin this
-  module to `~> 0.5.0`. On Terraform 1.11, 0.5.x still has #175: an
+  anything, so nothing is half-applied. To stay on Terraform 1.11 or 1.12,
+  pin this module to `~> 0.5.0`. On Terraform 1.11, 0.5.x still has #175: an
   `n8n_dns_config` option without a `value` (for example `edns0`) aborts the
   plan with "argument must not be null". Avoid value-less options there, or
   upgrade Terraform.

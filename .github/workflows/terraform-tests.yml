@@ -19,10 +19,13 @@ env:
   # release the module's required_version admits. A floor CI never runs is a
   # claim nobody is checking: on the previous `>= 1.11` floor, two validations
   # (#167, #175) broke on 1.11 and passed here, because && and || only
-  # short-circuit from Terraform 1.12. Must be X.Y.0 for a `>= X.Y` floor, and
+  # short-circuit from Terraform 1.12. The floor is 1.13 rather than 1.12
+  # because `terraform test` on 1.12.x leaks about one provider process per
+  # run block, which exhausts a 16 GB runner on the root suite (see
+  # versions.tf). Must be X.Y.0 for a `>= X.Y` floor, and
   # move together with all thirteen required_version declarations;
   # tests/scripts/check-terraform-floor.sh fails the job otherwise.
-  TF_FLOOR_VERSION: "1.12.0"
+  TF_FLOOR_VERSION: "1.13.0"
   TFLINT_VERSION: "v0.64.0"
   # Tracks the version `brew install markdownlint-cli` installs, so
   # contributors don't need a special install path — the same trap
@@ -205,18 +208,6 @@ jobs:
   # separate job rather than a matrix dimension on `test`, so the existing
   # check names stay unchanged and each version is defined once (matrix values
   # cannot read `env`).
-  #
-  # One deliberate difference from `test`: at the module root it skips
-  # tests/defaults.tftest.hcl. `terraform test` on Terraform 1.12.x leaves
-  # about one provider plugin process (~70 MB) running per run block, which
-  # is fixed in 1.13.0. Measured locally: 1.12.0 reached 199 provider
-  # processes and 14 GB after ~185 runs (1.12.2 leaks the same way), while
-  # 1.16.4 stays at 5 processes and 1.6 GB for all 806 runs. On a 16 GB
-  # runner the 806-run file is killed with exit code 143 at ~430 runs (PR
-  # #183). This only affects the test harness: init and plan on 1.12.0 are
-  # fine. The other root test files and every example suite still run here,
-  # so validations are still evaluated on the floor by every plan; only the
-  # invalid-input runs in defaults.tftest.hcl are not.
   test-floor:
     name: terraform test on floor (${{ matrix.target }})
     runs-on: ubuntu-latest
@@ -253,25 +244,9 @@ jobs:
         working-directory: ${{ matrix.target }}
         run: mkdir -p "$TF_PLUGIN_CACHE_DIR" && terraform init -backend=false
 
-      - name: terraform validate
-        working-directory: ${{ matrix.target }}
-        run: terraform validate -no-color
-
       - name: terraform test
         working-directory: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          if [[ "${{ matrix.target }}" == "." ]]; then
-            # Every root test file except defaults.tftest.hcl (see the job
-            # comment), found by glob so a new root file is not skipped.
-            filters=()
-            for f in tests/*.tftest.hcl; do
-              [[ "$f" == tests/defaults.tftest.hcl ]] || filters+=("-filter=$f")
-            done
-            terraform test -verbose "${filters[@]}"
-          else
-            terraform test -verbose
-          fi
+        run: terraform test -verbose
 
   chart:
     name: main topology chart rendering
