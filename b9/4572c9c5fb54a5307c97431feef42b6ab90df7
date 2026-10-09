@@ -1,0 +1,33 @@
+README.md
+  s_4972e6e3ce6944::t_825c16cffadaf7 201-221,2664
+controllers.tf
+  s_4972e6e3ce6944::t_26aa9649652ada 31
+modules/controllers/variables.tf
+  s_4972e6e3ce6944::t_99b5f0f29132c7 98-104
+locals.tf
+  s_4972e6e3ce6944::t_129878f300706a 385-390,396
+tests/defaults.tftest.hcl
+  s_4972e6e3ce6944::t_1705745eef0bfa 14301-14348
+modules/controllers/controllers.tf
+  s_4972e6e3ce6944::t_e3786f11d17d76 26-29
+variables.tf
+  s_4972e6e3ce6944::t_a0fb542bb6d618 26-37
+CHANGELOG.md
+  s_4972e6e3ce6944::t_9cc4d665659aee 12-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b94572c9c5fb54a5307c97431feef42b6ab90df7",
+  "prompts": {},
+  "sessions": {
+    "s_4972e6e3ce6944": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1fc53b3f-a524-45af-999e-1340e4eb4ddd",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Thanasis Gkliatis <thanasis.gkliatis@n8n.io>"
+    }
+  }
+}
