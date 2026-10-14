@@ -283,3 +283,28 @@ run "deletion_controls_pass_through_to_module" {
     error_message = "s3_force_destroy must pass from the example to the module"
   }
 }
+
+# ── AWS Partner Revenue Measurement tag ───────────────────────────────────────
+# The example merges the tag into its own tags (VPC, NAT gateway, stand-in
+# infrastructure) and passes the same value to the module. Whether the module
+# then tags what it creates is asserted in the root tests/defaults.tftest.hcl;
+# a local cannot be read from here, so these runs pin the input contract.
+
+run "aws_partner_attribution_tag_defaults_to_the_product_code" {
+  command = plan
+
+  assert {
+    condition     = var.aws_partner_attribution_tag == "pc:26au7o6cdeh7fqdt376h9m9xk"
+    error_message = "The example must default to the same product code as the module root"
+  }
+}
+
+run "aws_partner_attribution_tag_rejects_a_value_that_is_not_a_product_code" {
+  command = plan
+
+  variables {
+    aws_partner_attribution_tag = "26au7o6cdeh7fqdt376h9m9xk"
+  }
+
+  expect_failures = [var.aws_partner_attribution_tag]
+}

@@ -298,6 +298,18 @@ variable "s3_force_destroy" {
   default     = null
 }
 
+variable "aws_partner_attribution_tag" {
+  description = "Value of the aws-apn-id tag added to every AWS resource this example and the module create, so AWS Partner Revenue Measurement attributes their spend to n8n. Passed to the module's aws_partner_attribution_tag and merged into this example's own tags, which is how the VPC, NAT gateway and any stand-in infrastructure get it. Set to an empty string to remove the tag. Keep the default and validation in sync with the module root's variables.tf."
+  type        = string
+  default     = "pc:26au7o6cdeh7fqdt376h9m9xk"
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^(|pc:[a-z0-9]+)$", var.aws_partner_attribution_tag))
+    error_message = "aws_partner_attribution_tag must be empty, or an AWS Marketplace product code such as pc:abc123."
+  }
+}
+
 variable "tags" {
   description = "Additional AWS tags to apply to every resource this example creates."
   type        = map(string)

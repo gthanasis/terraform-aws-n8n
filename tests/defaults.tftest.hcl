@@ -14317,6 +14317,11 @@ run "aws_partner_attribution_tag_is_on_by_default" {
     condition     = yamldecode(module.controllers.lbc_helm_release[0].values[0]).defaultTags["aws-apn-id"] == "pc:26au7o6cdeh7fqdt376h9m9xk"
     error_message = "The AWS Load Balancer Controller must tag the resources it creates with aws-apn-id by default"
   }
+
+  assert {
+    condition     = jsondecode(module.controllers.ebs_csi_addon[0].configuration_values).controller.extraVolumeTags["aws-apn-id"] == "pc:26au7o6cdeh7fqdt376h9m9xk"
+    error_message = "The EBS CSI driver must tag the volumes it provisions with aws-apn-id by default"
+  }
 }
 
 run "aws_partner_attribution_tag_empty_removes_the_tag" {

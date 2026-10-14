@@ -203,8 +203,11 @@ See [docs/upgrading-n8n.md](docs/upgrading-n8n.md) for the procedure to safely b
 The module adds the tag `aws-apn-id` to every AWS resource it creates that
 supports tags. When the module installs the AWS Load Balancer Controller
 (`install_lbc = true`, the default), the controller adds the same tag to the ALB
-it creates. AWS uses this tag for AWS Partner Revenue Measurement. It lets AWS
-attribute the spend of the tagged resources to n8n as an AWS Partner.
+and the listeners, target groups and security groups it creates. When it
+installs the EBS CSI driver (`create_ebs_csi = true`, the default), the driver
+adds it to every EBS volume it provisions. AWS uses this tag for AWS Partner
+Revenue Measurement. It lets AWS attribute the spend of the tagged resources to
+n8n as an AWS Partner.
 
 The tag is usage data. AWS reports the usage and spend of the tagged resources
 to n8n, not the data stored in them. Check it against your own data policy
@@ -216,12 +219,24 @@ them, and turning off telemetry does not remove the tag.
 
 To remove the tag, set `aws_partner_attribution_tag = ""` and run
 `terraform apply`. This removes it from the resources Terraform manages, and the
-controller stops adding it to the load balancers it creates. A `tags` entry with
-the key `aws-apn-id` changes the value on Terraform-managed resources only, not
-on the ALB, so use the input instead.
+controller stops adding it to the load balancers it creates. Verified live: an
+existing ALB, its listeners and its target groups lose the tag about two
+minutes after the apply. A `tags` entry with the key `aws-apn-id` changes the
+value on Terraform-managed resources only, not on the ALB or on volumes the CSI
+driver provisions, so use the input instead.
 
-The EC2 instances in the EKS node group do not carry the tag. EKS does not copy
-node group tags to the instances it launches.
+Some resources stay untagged, because EKS creates them and does not copy tags
+to them: the EC2 instances in the EKS node group, their root volumes, the node
+launch template, and the cluster security group `eks-cluster-sg-*`.
+
+The Pod Identity association that belongs to the EBS CSI addon takes the addon's
+tags only when it is created. On a deployment created before the tag existed,
+that one association keeps its old tags until the addon is recreated. It has no
+cost of its own.
+
+The VPC, NAT gateway and any stand-in infrastructure in `examples/*` carry the
+tag too, through the example's own `aws_partner_attribution_tag` input. If you
+write your own VPC, tag it yourself: the module does not create it.
 
 ## Out of scope
 

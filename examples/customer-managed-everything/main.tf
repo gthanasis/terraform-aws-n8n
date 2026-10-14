@@ -1,9 +1,14 @@
 locals {
+  aws_partner_attribution_tags = {
+    for k, v in { "aws-apn-id" = var.aws_partner_attribution_tag } : k => v if v != ""
+  }
+
   common_tags = merge(
     {
       ManagedBy = "terraform"
       Project   = "n8n"
     },
+    local.aws_partner_attribution_tags,
     var.tags,
   )
 
@@ -460,7 +465,9 @@ module "controllers" {
   aws_region       = var.aws_region
   vpc_id           = module.vpc.vpc_id
 
-  common_tags = local.common_tags
+  common_tags      = local.common_tags
+  lbc_default_tags = local.aws_partner_attribution_tags
+  ebs_volume_tags  = local.aws_partner_attribution_tags
 
   # true, not false, even though module "n8n" below sets create_eks = false:
   # the two mean different things. n8n's create_eks = false says "the n8n
@@ -513,6 +520,8 @@ module "controllers" {
 
 module "n8n" {
   source = "../.."
+
+  aws_partner_attribution_tag = var.aws_partner_attribution_tag
 
   aws_region      = var.aws_region
   cluster_name    = var.cluster_name
