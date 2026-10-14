@@ -14367,3 +14367,35 @@ run "aws_partner_attribution_tag_rejects_a_value_that_is_not_a_product_code" {
 
   expect_failures = [var.aws_partner_attribution_tag]
 }
+
+run "aws_partner_attribution_tag_is_not_overridden_by_tags" {
+  command = plan
+
+  variables {
+    tags = { "aws-apn-id" = "pc:somethingelse", Team = "platform" }
+  }
+
+  assert {
+    condition     = aws_eks_cluster.n8n[0].tags["aws-apn-id"] == "pc:26au7o6cdeh7fqdt376h9m9xk"
+    error_message = "An aws-apn-id key in tags must not replace the value of aws_partner_attribution_tag"
+  }
+
+  assert {
+    condition     = aws_eks_cluster.n8n[0].tags["Team"] == "platform"
+    error_message = "Other tags entries must still be applied"
+  }
+}
+
+run "aws_partner_attribution_tag_empty_is_not_restored_by_tags" {
+  command = plan
+
+  variables {
+    aws_partner_attribution_tag = ""
+    tags                        = { "aws-apn-id" = "pc:somethingelse" }
+  }
+
+  assert {
+    condition     = !contains(keys(aws_eks_cluster.n8n[0].tags), "aws-apn-id")
+    error_message = "An aws-apn-id key in tags must not bring the tag back once aws_partner_attribution_tag is empty"
+  }
+}

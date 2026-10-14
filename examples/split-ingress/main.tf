@@ -8,8 +8,10 @@ locals {
       ManagedBy = "terraform"
       Project   = "n8n"
     },
+    # aws-apn-id is reserved for aws_partner_attribution_tag, so a tags entry
+    # cannot override it or bring it back after the input is set to "".
+    { for k, v in var.tags : k => v if k != "aws-apn-id" },
     local.aws_partner_attribution_tags,
-    var.tags,
   )
 
   # Webhook traffic is served from its own hostname because a single DNS name

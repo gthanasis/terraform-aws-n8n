@@ -16,11 +16,14 @@ this project adheres to the stability contract in
   and to every EBS volume the EBS CSI driver provisions, through the addon's
   `controller.extraVolumeTags` when `create_ebs_csi` is true. AWS Partner
   Revenue Measurement uses it to attribute the spend to n8n. It defaults to the
-  product code of n8n's AWS Marketplace container listing. Set it to `""` to
-  remove the tag from the resources Terraform manages and stop the controller
-  adding it to the load balancers it creates. Every example takes the same input
-  and merges it into its own tags, so its VPC and stand-in infrastructure carry
-  it too. The EKS node group's EC2 instances, their root volumes, the node
+  product code of n8n's AWS Marketplace container listing. The input owns the
+  tag: an `aws-apn-id` key in `tags` is ignored, and `""` removes the tag from
+  the resources Terraform manages and stops the controller adding it to the load
+  balancers it creates. Every example takes the same input and merges it into
+  its own tags, so its VPC and Redis, RDS and S3 stand-ins carry it too; the
+  stand-in EKS clusters in `customer-managed-cluster` and
+  `customer-managed-everything` tag their node groups only.
+  The EKS node group's EC2 instances, their root volumes, the node
   launch template and the EKS-created cluster security group stay untagged,
   because EKS does not copy tags to them. Upgrade note: the first plan after
   upgrading updates the tags of every tagged resource in place, upgrades the AWS

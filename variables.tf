@@ -24,7 +24,7 @@ variable "tags" {
 }
 
 variable "aws_partner_attribution_tag" {
-  description = "Value of the aws-apn-id tag added to the AWS resources this module and the AWS Load Balancer Controller create. AWS Partner Revenue Measurement uses it to attribute their AWS spend to n8n as usage data. Set to an empty string to remove the tag."
+  description = "Value of the aws-apn-id tag added to every taggable AWS resource this module creates, and applied by the AWS Load Balancer Controller to the load balancers it creates and by the EBS CSI driver to the volumes it provisions. AWS Partner Revenue Measurement uses it to attribute their AWS spend to n8n as usage data. This input owns the tag: an aws-apn-id key in tags is ignored. Set to an empty string to remove the tag from the resources Terraform manages and stop new load balancers and volumes receiving it; EBS volumes that already exist keep it."
   type        = string
   default     = "pc:26au7o6cdeh7fqdt376h9m9xk"
   nullable    = false
