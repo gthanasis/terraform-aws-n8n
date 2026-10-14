@@ -42,7 +42,7 @@ This example is two things layered together, same shape as the single-layer exam
 
 ## AWS Partner Revenue Measurement tag
 
-`aws_partner_attribution_tag` reaches every stand-in resource through `local.common_tags`, the module's resources through the same input, and `modules/controllers` through `lbc_default_tags` and `ebs_volume_tags`. The stand-in node group is tagged as a node group only: EKS does not copy those tags to the instances and volumes it launches, and this example attaches no launch template, so those carry no `aws-apn-id`. On a real customer-managed cluster the node group is yours; add a launch template with `tag_specifications` if you want its instances attributed.
+`aws_partner_attribution_tag` reaches every taggable stand-in resource through `local.common_tags`, the module's resources through the same input, and `modules/controllers` through `lbc_default_tags` and `ebs_volume_tags`. The stand-in node group is tagged as a node group only: EKS does not copy those tags to the instances and volumes it launches, and this example attaches no launch template, so those carry no `aws-apn-id`. On a real customer-managed cluster the node group is yours. Giving an existing node group a launch template with `tag_specifications` replaces its nodes, so plan the rotation (surge capacity, drain order, a maintenance window) before you make that change.
 
 ## Adapting to your real infrastructure
 

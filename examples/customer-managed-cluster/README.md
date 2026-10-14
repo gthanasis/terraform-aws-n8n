@@ -28,7 +28,7 @@ Unlike the four attestation items above, the `eks-pod-identity-agent` addon is n
 
 ## AWS Partner Revenue Measurement tag
 
-`aws_partner_attribution_tag` reaches the stand-in cluster, its node group and its other resources through `local.common_tags`, and the module's own resources through the same input. The stand-in node group is tagged as a node group only: EKS does not copy those tags to the instances and volumes it launches, and this example attaches no launch template, so those carry no `aws-apn-id`. On a real customer-managed cluster the node group is yours; add a launch template with `tag_specifications` if you want its instances attributed.
+`aws_partner_attribution_tag` reaches the stand-in cluster, its node group and its other resources through `local.common_tags`, and the module's own resources through the same input. The stand-in node group is tagged as a node group only: EKS does not copy those tags to the instances and volumes it launches, and this example attaches no launch template, so those carry no `aws-apn-id`. On a real customer-managed cluster the node group is yours. Giving an existing node group a launch template with `tag_specifications` replaces its nodes, so plan the rotation (surge capacity, drain order, a maintenance window) before you make that change.
 
 ## Adapting to your real infrastructure
 
