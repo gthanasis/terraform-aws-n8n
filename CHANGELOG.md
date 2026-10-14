@@ -24,9 +24,11 @@ this project adheres to the stability contract in
   launch template and the EKS-created cluster security group stay untagged,
   because EKS does not copy tags to them. Upgrade note: the first plan after
   upgrading updates the tags of every tagged resource in place, upgrades the AWS
-  Load Balancer Controller release and reconfigures the EBS CSI addon. The one
-  Pod Identity association owned by the EBS CSI addon keeps its old tags until
-  the addon is recreated. See README.md → AWS Partner Revenue Measurement tag.
+  Load Balancer Controller release and reconfigures the EBS CSI addon, which
+  tags volumes it provisions from then on; volumes that already exist are not
+  retagged, and opting out does not untag them. The one Pod Identity
+  association owned by the EBS CSI addon keeps its old tags until the addon is
+  recreated. See README.md → AWS Partner Revenue Measurement tag.
 - A plan-time advisory `check.db_postgresdb_pool_size_fits_known_max_connections`
   (`database.tf`) warns when `db_postgresdb_pool_size` times the modeled main,
   worker, webhook-processor, and `n8n_worker_pools` replica ceilings would

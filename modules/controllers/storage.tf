@@ -30,11 +30,13 @@ resource "aws_eks_addon" "ebs_csi" {
 
   # The driver creates volumes outside Terraform, so common_tags never reach
   # them. extraVolumeTags is the addon's own way to tag every volume it
-  # provisions, whichever StorageClass a claim uses. null leaves the addon's
-  # configuration untouched when there is nothing to add.
-  configuration_values = length(var.ebs_volume_tags) > 0 ? jsonencode({
+  # provisions, whichever StorageClass a claim uses. It is sent even when empty:
+  # null would leave a previously applied extraVolumeTags in place on the addon,
+  # so opting out of the tag would never stop new volumes receiving it. Existing
+  # volumes are not retagged; the driver applies the tags at creation.
+  configuration_values = jsonencode({
     controller = { extraVolumeTags = var.ebs_volume_tags }
-  }) : null
+  })
 
   tags = var.common_tags
 

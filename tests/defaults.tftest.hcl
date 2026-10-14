@@ -14340,6 +14340,22 @@ run "aws_partner_attribution_tag_empty_removes_the_tag" {
     condition     = length(module.controllers.lbc_helm_release[0].values) == 0
     error_message = "An empty aws_partner_attribution_tag must not pass defaultTags to the AWS Load Balancer Controller"
   }
+
+  assert {
+    condition     = jsondecode(module.controllers.ebs_csi_addon[0].configuration_values).controller.extraVolumeTags == {}
+    error_message = "An empty aws_partner_attribution_tag must send an empty extraVolumeTags, so a previously applied tag is cleared from the EBS CSI addon rather than left in place"
+  }
+}
+
+run "aws_partner_attribution_tag_rejects_a_value_over_the_aws_tag_value_limit" {
+  command = plan
+
+  variables {
+    # "pc:" plus 254 characters is 257, one over the 256-character tag value limit.
+    aws_partner_attribution_tag = "pc:${join("", [for i in range(254) : "a"])}"
+  }
+
+  expect_failures = [var.aws_partner_attribution_tag]
 }
 
 run "aws_partner_attribution_tag_rejects_a_value_that_is_not_a_product_code" {

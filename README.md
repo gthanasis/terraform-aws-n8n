@@ -229,6 +229,11 @@ Some resources stay untagged, because EKS creates them and does not copy tags
 to them: the EC2 instances in the EKS node group, their root volumes, the node
 launch template, and the cluster security group `eks-cluster-sg-*`.
 
+The EBS CSI driver applies its tags when it creates a volume. Upgrading does not
+retag volumes that already exist, and setting `aws_partner_attribution_tag = ""`
+does not remove the tag from them: only volumes provisioned afterwards are
+affected. Tag or untag existing volumes yourself if you need them to match.
+
 The Pod Identity association that belongs to the EBS CSI addon takes the addon's
 tags only when it is created. On a deployment created before the tag existed,
 that one association keeps its old tags until the addon is recreated. It has no

@@ -256,7 +256,7 @@ variable "aws_partner_attribution_tag" {
   nullable    = false
 
   validation {
-    condition     = can(regex("^(|pc:[a-z0-9]+)$", var.aws_partner_attribution_tag))
+    condition     = can(regex("^(|pc:[a-z0-9]{1,253})$", var.aws_partner_attribution_tag))
     error_message = "aws_partner_attribution_tag must be empty, or an AWS Marketplace product code such as pc:abc123."
   }
 }
